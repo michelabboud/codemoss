@@ -145,6 +145,7 @@ import { forceRefreshAgents } from "./features/composer/components/ChatInputBox/
 import { recordSearchResultOpen } from "./features/search/ranking/recencyStore";
 import type { SearchContentFilter, SearchResult, SearchScope } from "./features/search/types";
 import { toggleSearchContentFilters } from "./features/search/utils/contentFilters";
+import { resolveSearchScopeOnOpen } from "./features/search/utils/scope";
 import {
   getSelectedAgentConfig,
   getOpenCodeAgentsList,
@@ -2471,24 +2472,33 @@ function MainApp() {
     t,
   ]);
 
-  const handleOpenSearchPalette = useCallback(() => {
-    setIsSearchPaletteOpen(true);
+  const closeSearchPalette = useCallback(() => {
+    setIsSearchPaletteOpen(false);
+    setSearchPaletteQuery("");
     setSearchPaletteSelectedIndex(0);
   }, []);
+
+  const handleOpenSearchPalette = useCallback(() => {
+    const nextScope = resolveSearchScopeOnOpen(searchScope, activeWorkspaceId);
+    if (nextScope !== searchScope) {
+      setSearchScope(nextScope);
+    }
+    setIsSearchPaletteOpen(true);
+    setSearchPaletteSelectedIndex(0);
+  }, [activeWorkspaceId, searchScope]);
+
+  const handleToggleSearchPalette = useCallback(() => {
+    if (isSearchPaletteOpen) {
+      closeSearchPalette();
+      return;
+    }
+    handleOpenSearchPalette();
+  }, [closeSearchPalette, handleOpenSearchPalette, isSearchPaletteOpen]);
 
   useGlobalSearchShortcut({
     isEnabled: true,
     shortcut: appSettings.toggleGlobalSearchShortcut,
-    onTrigger: () => {
-      setIsSearchPaletteOpen((prev) => {
-        const next = !prev;
-        if (!next) {
-          setSearchPaletteQuery("");
-          setSearchPaletteSelectedIndex(0);
-        }
-        return next;
-      });
-    },
+    onTrigger: handleToggleSearchPalette,
   });
 
   useEffect(() => {
@@ -2601,11 +2611,10 @@ function MainApp() {
           break;
       }
       recordSearchResultOpen(result.id);
-      setIsSearchPaletteOpen(false);
-      setSearchPaletteQuery("");
-      setSearchPaletteSelectedIndex(0);
+      closeSearchPalette();
     },
     [
+      closeSearchPalette,
       exitDiffView,
       handleDraftChange,
       handleOpenFile,
@@ -3588,16 +3597,7 @@ function MainApp() {
     onCycleWorkspace: handleCycleWorkspace,
     onToggleDebug: handleDebugClick,
     onToggleTerminal: handleToggleTerminal,
-    onToggleGlobalSearch: () => {
-      setIsSearchPaletteOpen((prev) => {
-        const next = !prev;
-        if (!next) {
-          setSearchPaletteQuery("");
-          setSearchPaletteSelectedIndex(0);
-        }
-        return next;
-      });
-    },
+    onToggleGlobalSearch: handleToggleSearchPalette,
     sidebarCollapsed,
     rightPanelCollapsed,
     rightPanelAvailable,
@@ -4156,6 +4156,7 @@ function MainApp() {
       }
     },
     onOpenGlobalSearch: handleOpenSearchPalette,
+    globalSearchShortcut: appSettings.toggleGlobalSearchShortcut,
     onOpenWorkspaceHome: handleOpenWorkspaceHome,
   });
 
@@ -4375,6 +4376,8 @@ function MainApp() {
                   await queueSaveSettings(next);
                 }}
                 onRunDoctor={doctor}
+                activeWorkspace={activeWorkspace}
+                activeEngine={activeEngine}
                 onUpdateWorkspaceCodexBin={async (id, codexBin) => {
                   await updateWorkspaceCodexBin(id, codexBin);
                 }}
@@ -4423,11 +4426,7 @@ function MainApp() {
           setSearchPaletteSelectedIndex(0);
         }}
         onContentFilterToggle={handleToggleSearchContentFilter}
-        onClose={() => {
-          setIsSearchPaletteOpen(false);
-          setSearchPaletteQuery("");
-          setSearchPaletteSelectedIndex(0);
-        }}
+        onClose={closeSearchPalette}
       />
       <AskUserQuestionDialog
         requests={userInputRequests}
