@@ -320,6 +320,20 @@ type UseThreadsOptions = {
   useUnifiedHistoryLoader?: boolean;
   resolveOpenCodeAgent?: (threadId: string | null) => string | null;
   resolveOpenCodeVariant?: (threadId: string | null) => string | null;
+  resolveCollaborationUiMode?: (
+    threadId: string,
+  ) => "plan" | "code" | null;
+  resolveCollaborationRuntimeMode?: (
+    threadId: string,
+  ) => "plan" | "code" | null;
+  onCollaborationModeResolved?: (payload: {
+    workspaceId: string;
+    threadId: string;
+    selectedUiMode: "plan" | "default";
+    effectiveRuntimeMode: "plan" | "code";
+    effectiveUiMode: "plan" | "default";
+    fallbackReason: string | null;
+  }) => void;
 };
 
 type PendingResolutionInput = {
@@ -436,6 +450,9 @@ export function useThreads({
   useUnifiedHistoryLoader = false,
   resolveOpenCodeAgent,
   resolveOpenCodeVariant,
+  resolveCollaborationUiMode,
+  resolveCollaborationRuntimeMode,
+  onCollaborationModeResolved,
 }: UseThreadsOptions) {
   const [state, dispatch] = useReducer(threadReducer, initialState);
   const loadedThreadsRef = useRef<Record<string, boolean>>({});
@@ -1114,10 +1131,12 @@ export function useThreads({
             });
             return;
           } catch (updateErr) {
-            console.warn(
-              "[project-memory] merge update failed, falling back to create:",
-              { threadId: payload.threadId, memoryId: pending.memoryId, error: updateErr },
-            );
+            if (import.meta.env.DEV) {
+              console.warn(
+                "[project-memory] merge update failed, falling back to create:",
+                { threadId: payload.threadId, memoryId: pending.memoryId, error: updateErr },
+              );
+            }
             memoryDebugLog("merge update failed", {
               threadId: payload.threadId,
               memoryId: pending.memoryId,
@@ -1146,10 +1165,12 @@ export function useThreads({
             itemId: payload.itemId,
           });
         } catch (createErr) {
-          console.warn("[project-memory] merge create also failed:", {
-            threadId: payload.threadId,
-            error: createErr,
-          });
+          if (import.meta.env.DEV) {
+            console.warn("[project-memory] merge create also failed:", {
+              threadId: payload.threadId,
+              error: createErr,
+            });
+          }
           memoryDebugLog("merge create failed", {
             threadId: payload.threadId,
             error: createErr instanceof Error ? createErr.message : String(createErr),
@@ -1300,6 +1321,7 @@ export function useThreads({
     startMcp,
     startSpecRoot,
     startStatus,
+    startMode,
     startExport,
     startImport,
     startLsp,
@@ -1360,6 +1382,7 @@ export function useThreads({
     resolveOpenCodeAgent,
     resolveOpenCodeVariant,
     onInputMemoryCaptured: handleInputMemoryCaptured,
+    resolveCollaborationRuntimeMode,
   });
 
   const setActiveThreadId = useCallback(
@@ -1546,6 +1569,7 @@ export function useThreads({
     activeThreadId,
     dispatch,
     getCustomName,
+    resolveCollaborationUiMode,
     isAutoTitlePending,
     isThreadHidden,
     markProcessing,
@@ -1566,6 +1590,18 @@ export function useThreads({
     resolvePendingThreadForSession,
     renamePendingMemoryCaptureKey,
     onAgentMessageCompletedExternal: handleAgentMessageCompletedForMemory,
+    onCollaborationModeResolved: onCollaborationModeResolved
+      ? (event) => {
+          onCollaborationModeResolved({
+            workspaceId: event.workspace_id,
+            threadId: event.params.thread_id,
+            selectedUiMode: event.params.selected_ui_mode,
+            effectiveRuntimeMode: event.params.effective_runtime_mode,
+            effectiveUiMode: event.params.effective_ui_mode,
+            fallbackReason: event.params.fallback_reason ?? null,
+          });
+        }
+      : undefined,
   });
 
   useAppServerEvents(handlers, {
@@ -1619,6 +1655,7 @@ export function useThreads({
     startMcp,
     startSpecRoot,
     startStatus,
+    startMode,
     startExport,
     startImport,
     startLsp,

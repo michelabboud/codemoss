@@ -30,6 +30,9 @@ export function useComposerController({
   startImport,
   startLsp,
   startShare,
+  startMode,
+  setCodexCollaborationMode,
+  getCodexCollaborationMode,
 }: {
   activeThreadId: string | null;
   activeWorkspaceId: string | null;
@@ -65,10 +68,14 @@ export function useComposerController({
   startImport: (text: string) => Promise<void>;
   startLsp: (text: string) => Promise<void>;
   startShare: (text: string) => Promise<void>;
+  startMode: (text: string) => Promise<void>;
+  setCodexCollaborationMode?: (mode: "plan" | "code") => void;
+  getCodexCollaborationMode?: () => "plan" | "code" | null;
 }) {
   const [composerDraftsByThread, setComposerDraftsByThread] = useState<
     Record<string, string>
   >({});
+  const [detachedDraft, setDetachedDraft] = useState("");
   const [prefillDraft, setPrefillDraft] = useState<QueuedMessage | null>(null);
   const [composerInsert, setComposerInsert] = useState<QueuedMessage | null>(
     null,
@@ -110,18 +117,24 @@ export function useComposerController({
     startImport,
     startLsp,
     startShare,
+    startMode,
+    setCodexCollaborationMode,
+    getCodexCollaborationMode,
     clearActiveImages,
   });
 
   const activeDraft = useMemo(
     () =>
-      activeThreadId ? composerDraftsByThread[activeThreadId] ?? "" : "",
-    [activeThreadId, composerDraftsByThread],
+      activeThreadId
+        ? composerDraftsByThread[activeThreadId] ?? ""
+        : detachedDraft,
+    [activeThreadId, composerDraftsByThread, detachedDraft],
   );
 
   const handleDraftChange = useCallback(
     (next: string) => {
       if (!activeThreadId) {
+        setDetachedDraft(next);
         return;
       }
       startTransition(() => {

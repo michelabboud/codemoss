@@ -22,10 +22,12 @@ import type {
   ConversationState,
 } from "../../threads/contracts/conversationCurtainContracts";
 import { Markdown } from "./Markdown";
+import { CollapsibleUserTextBlock } from "./CollapsibleUserTextBlock";
 import { DiffBlock } from "../../git/components/DiffBlock";
 import { languageFromPath } from "../../../utils/syntax";
 import { useFileLinkOpener } from "../hooks/useFileLinkOpener";
 import { groupToolItems, type GroupedEntry } from "../utils/groupToolItems";
+import { extractCommandMessageDisplayText } from "../utils/commandMessageTags";
 import {
   ToolBlockRenderer,
   ReadToolGroupBlock,
@@ -36,6 +38,7 @@ import {
 import { buildCommandSummary } from "./toolBlocks/toolConstants";
 import { MEMORY_CONTEXT_SUMMARY_PREFIX } from "../../project-memory/utils/memoryMarkers";
 import type { PresentationProfile } from "../presentation/presentationProfile";
+import { RequestUserInputMessage } from "../../app/components/RequestUserInputMessage";
 
 
 type MessagesProps = {
@@ -88,7 +91,10 @@ type MessageRowProps = {
   enableCollaborationBadge?: boolean;
   presentationProfile?: PresentationProfile | null;
   isCopied: boolean;
-  onCopy: (item: Extract<ConversationItem, { kind: "message" }>) => void;
+  onCopy: (
+    item: Extract<ConversationItem, { kind: "message" }>,
+    copyText?: string,
+  ) => void;
   codeBlockCopyUseModifier?: boolean;
   onOpenFileLink?: (path: string) => void;
   onOpenFileLinkMenu?: (event: React.MouseEvent, path: string) => void;
@@ -139,7 +145,9 @@ const LEGACY_MEMORY_RECORD_HINT_REGEX =
   /(?:用户输入[:：]|助手输出摘要[:：]|助手输出[:：])/;
 const PROJECT_MEMORY_XML_PREFIX_REGEX =
   /^<project-memory\b[^>]*>([\s\S]*?)<\/project-memory>\s*/i;
-const CODE_MODE_FALLBACK_MARKER_REGEX = /User request\s*:\s*/i;
+const MODE_FALLBACK_MARKER_REGEX = /User request\s*:\s*/i;
+const MODE_FALLBACK_PREFIX_REGEX =
+  /^(?:collaboration mode:\s*code\.|execution policy \(default mode\):|execution policy \(plan mode\):)/i;
 const MESSAGES_PERF_DEBUG_FLAG_KEY = "mossx.debug.messages.perf";
 const MESSAGES_SLOW_RENDER_WARN_MS = 18;
 const MESSAGES_SLOW_ANCHOR_WARN_MS = 8;
@@ -175,21 +183,24 @@ function normalizeCollaborationModeId(
   return null;
 }
 
-function extractFallbackCodeUserInput(
+function extractModeFallbackUserInput(
   text: string,
-): { text: string; mode: "code" | null } {
+): { text: string; mode: "code" | "plan" | null } {
   const trimmed = text.trimStart();
-  if (!trimmed.toLowerCase().startsWith("collaboration mode: code.")) {
+  if (!MODE_FALLBACK_PREFIX_REGEX.test(trimmed)) {
     return { text, mode: null };
   }
-  const markerMatch = CODE_MODE_FALLBACK_MARKER_REGEX.exec(text);
+  const mode: "code" | "plan" = /^execution policy \(plan mode\):/i.test(trimmed)
+    ? "plan"
+    : "code";
+  const markerMatch = MODE_FALLBACK_MARKER_REGEX.exec(text);
   if (!markerMatch || markerMatch.index < 0) {
-    return { text, mode: "code" };
+    return { text, mode };
   }
   const extracted = text
     .slice(markerMatch.index + markerMatch[0].length)
     .trim();
-  return { text: extracted || text, mode: "code" };
+  return { text: extracted || text, mode };
 }
 
 function toConversationEngine(
@@ -930,7 +941,6 @@ const WorkingIndicator = memo(function WorkingIndicator({
 const MessageRow = memo(function MessageRow({
   item,
   activeEngine = "claude",
-  activeCollaborationModeId = null,
   enableCollaborationBadge = false,
   presentationProfile = null,
   isCopied,
@@ -960,36 +970,36 @@ const MessageRow = memo(function MessageRow({
       return memorySummary ? "" : originalText;
     }
     const safeText = enableCollaborationBadge
-      ? extractFallbackCodeUserInput(originalText).text
+      ? extractModeFallbackUserInput(originalText).text
       : originalText;
-    const userInputMatches = [...safeText.matchAll(/\[User Input\]\s*/g)];
+    const filteredCommandText = extractCommandMessageDisplayText(safeText);
+    const userInputMatches = [...filteredCommandText.matchAll(/\[User Input\]\s*/g)];
     if (userInputMatches.length === 0) {
-      return safeText;
+      return filteredCommandText;
     }
     const lastMatch = userInputMatches[userInputMatches.length - 1];
     const markerIndex = lastMatch.index ?? -1;
     if (markerIndex < 0) {
-      return safeText;
+      return filteredCommandText;
     }
     const markerLength = lastMatch[0]?.length ?? 0;
-    const extracted = safeText.slice(markerIndex + markerLength).trim();
-    return extracted.length > 0 ? extracted : safeText;
+    const extracted = filteredCommandText.slice(markerIndex + markerLength).trim();
+    return extracted.length > 0 ? extracted : filteredCommandText;
   }, [enableCollaborationBadge, item.role, item.text, memorySummary]);
   const rowCollaborationMode = useMemo(() => {
     if (!enableCollaborationBadge || item.role !== "user") {
       return null;
     }
-    const fallbackMode = extractFallbackCodeUserInput(item.text).mode;
+    const itemMode = normalizeCollaborationModeId(item.collaborationMode);
+    if (itemMode) {
+      return itemMode;
+    }
+    const fallbackMode = extractModeFallbackUserInput(item.text).mode;
     if (fallbackMode) {
       return fallbackMode;
     }
-    return (
-      normalizeCollaborationModeId(item.collaborationMode) ??
-      normalizeCollaborationModeId(activeCollaborationModeId) ??
-      null
-    );
+    return null;
   }, [
-    activeCollaborationModeId,
     enableCollaborationBadge,
     item.collaborationMode,
     item.role,
@@ -1076,14 +1086,18 @@ const MessageRow = memo(function MessageRow({
           </div>
         ) : null}
         {hasText && (
-          <Markdown
-            value={displayText}
-            className={markdownClassName}
-            codeBlockStyle="message"
-            codeBlockCopyUseModifier={codeBlockCopyUseModifier}
-            onOpenFileLink={onOpenFileLink}
-            onOpenFileLinkMenu={onOpenFileLinkMenu}
-          />
+          item.role === "user" ? (
+            <CollapsibleUserTextBlock content={displayText} />
+          ) : (
+            <Markdown
+              value={displayText}
+              className={markdownClassName}
+              codeBlockStyle="message"
+              codeBlockCopyUseModifier={codeBlockCopyUseModifier}
+              onOpenFileLink={onOpenFileLink}
+              onOpenFileLinkMenu={onOpenFileLinkMenu}
+            />
+          )
         )}
         {lightboxIndex !== null && imageItems.length > 0 && (
           <ImageLightbox
@@ -1096,7 +1110,7 @@ const MessageRow = memo(function MessageRow({
           <button
             type="button"
             className={`ghost message-copy-button${isCopied ? " is-copied" : ""}`}
-            onClick={() => onCopy(item)}
+            onClick={() => onCopy(item, displayText || item.text)}
             aria-label={t("messages.copyMessage")}
             title={t("messages.copyMessage")}
           >
@@ -1264,14 +1278,14 @@ export const Messages = memo(function Messages({
   showMessageAnchors = true,
   codeBlockCopyUseModifier = false,
   userInputRequests: legacyUserInputRequests = [],
-  onUserInputSubmit: _legacyOnUserInputSubmit,
+  onUserInputSubmit: legacyOnUserInputSubmit,
   activeEngine: legacyActiveEngine = "claude",
   activeCollaborationModeId = null,
   plan: legacyPlan = null,
-  isPlanMode = false,
-  isPlanProcessing = false,
+  isPlanMode: _isPlanMode = false,
+  isPlanProcessing: _isPlanProcessing = false,
   onOpenDiffPath,
-  onOpenPlanPanel,
+  onOpenPlanPanel: _onOpenPlanPanel,
   conversationState = null,
   presentationProfile = null,
   onOpenWorkspaceFile,
@@ -1305,7 +1319,6 @@ export const Messages = memo(function Messages({
   );
   const effectiveState = conversationState ?? fallbackConversationState;
   const items = effectiveState.items;
-  const plan = effectiveState.plan;
   const userInputRequests = effectiveState.userInputQueue;
   const workspaceId = effectiveState.meta.workspaceId || legacyWorkspaceId;
   const threadId = effectiveState.meta.threadId || legacyThreadId;
@@ -1783,9 +1796,12 @@ export const Messages = memo(function Messages({
   }, [hasAnchorRail, messageAnchors, scheduleAnchorUpdate, scrollKey, threadId]);
 
   const handleCopyMessage = useCallback(
-    async (item: Extract<ConversationItem, { kind: "message" }>) => {
+    async (
+      item: Extract<ConversationItem, { kind: "message" }>,
+      copyText?: string,
+    ) => {
       try {
-        await navigator.clipboard.writeText(item.text);
+        await navigator.clipboard.writeText(copyText ?? item.text);
         setCopiedMessageId(item.id);
         if (copyTimeoutRef.current) {
           window.clearTimeout(copyTimeoutRef.current);
@@ -1828,9 +1844,17 @@ export const Messages = memo(function Messages({
 
   const groupedEntries = useMemo(() => groupToolItems(renderedItems), [renderedItems]);
 
-  // User input requests are now rendered as a top-level modal dialog
-  // (AskUserQuestionDialog mounted in App.tsx) instead of inline.
-  const userInputNode = null;
+  const userInputNode =
+    activeEngine === "codex" && legacyOnUserInputSubmit
+      ? (
+        <RequestUserInputMessage
+          requests={userInputRequests}
+          activeThreadId={threadId ?? null}
+          activeWorkspaceId={workspaceId ?? null}
+          onSubmit={legacyOnUserInputSubmit}
+        />
+      )
+      : null;
 
   const renderSingleItem = (item: ConversationItem) => {
     if (item.kind === "message") {
@@ -1928,42 +1952,7 @@ export const Messages = memo(function Messages({
         <EditToolGroupBlock
           key={`eg-${entry.items[0].id}`}
           items={entry.items}
-          plan={plan}
-          isPlanMode={isPlanMode}
-          isProcessing={isPlanProcessing}
           onOpenDiffPath={onOpenDiffPath}
-          onOpenFullPlan={() => {
-            onOpenPlanPanel?.();
-            if (planPanelFocusRafRef.current !== null) {
-              window.cancelAnimationFrame(planPanelFocusRafRef.current);
-              planPanelFocusRafRef.current = null;
-            }
-            if (planPanelFocusTimeoutRef.current !== null) {
-              window.clearTimeout(planPanelFocusTimeoutRef.current);
-              planPanelFocusTimeoutRef.current = null;
-            }
-            if (planPanelFocusNodeRef.current) {
-              planPanelFocusNodeRef.current.classList.remove("plan-panel-focus-ring");
-              planPanelFocusNodeRef.current = null;
-            }
-            planPanelFocusRafRef.current = window.requestAnimationFrame(() => {
-              planPanelFocusRafRef.current = null;
-              const planPanel = document.querySelector(".plan-panel");
-              if (!(planPanel instanceof HTMLElement)) {
-                return;
-              }
-              planPanelFocusNodeRef.current = planPanel;
-              planPanel.scrollIntoView({ behavior: "smooth", block: "nearest" });
-              planPanel.classList.add("plan-panel-focus-ring");
-              planPanelFocusTimeoutRef.current = window.setTimeout(() => {
-                planPanelFocusTimeoutRef.current = null;
-                planPanel.classList.remove("plan-panel-focus-ring");
-                if (planPanelFocusNodeRef.current === planPanel) {
-                  planPanelFocusNodeRef.current = null;
-                }
-              }, 1400);
-            });
-          }}
         />
       );
     }

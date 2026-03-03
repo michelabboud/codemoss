@@ -3,6 +3,21 @@ import type { ConversationItem } from "../types";
 const MAX_ITEM_TEXT = 20000;
 const TOOL_OUTPUT_RECENT_ITEMS = 40;
 const NO_TRUNCATE_TOOL_TYPES = new Set(["fileChange", "commandExecution"]);
+const EDIT_TOOL_TYPE_HINTS = new Set([
+  "edit",
+  "edit_file",
+  "editfile",
+  "multiedit",
+  "write",
+  "write_file",
+  "writefile",
+  "write_to_file",
+  "replace_string",
+  "file_edit",
+  "file_write",
+  "notebookedit",
+  "create_file",
+]);
 const READ_COMMANDS = new Set(["cat", "sed", "head", "tail", "less", "more", "nl"]);
 const LIST_COMMANDS = new Set(["ls", "tree", "find", "fd"]);
 const SEARCH_COMMANDS = new Set(["rg", "grep", "ripgrep", "findstr"]);
@@ -28,6 +43,9 @@ const RG_FLAGS_WITH_VALUES = new Set([
 const PROJECT_MEMORY_BLOCK_REGEX = /^<project-memory\b[\s\S]*?<\/project-memory>\s*/i;
 const PROJECT_MEMORY_LINE_PREFIX_REGEX =
   /^\[(?:已知问题|技术决策|项目上下文|对话记录|笔记|记忆)\]\s+/;
+const MODE_FALLBACK_PREFIX_REGEX =
+  /^(?:collaboration mode:\s*code\.|execution policy \(default mode\):|execution policy \(plan mode\):)/i;
+const MODE_FALLBACK_MARKER_REGEX = /User request\s*:\s*/i;
 const MAX_INJECTED_MEMORY_LINES = 12;
 const MESSAGE_PARAGRAPH_BREAK_SPLIT_REGEX = /\r?\n[^\S\r\n]*\r?\n+/;
 const ASSISTANT_FRAGMENT_MIN_RUN = 5;
@@ -37,6 +55,7 @@ const ASSISTANT_LINE_FRAGMENT_MIN_RUN = 6;
 const ASSISTANT_LINE_FRAGMENT_MAX_LENGTH = 10;
 const ASSISTANT_LINE_FRAGMENT_MIN_TOTAL_CHARS = 12;
 const ASSISTANT_TEXT_CACHE_MAX = 320;
+const ASSISTANT_NO_CONTENT_PLACEHOLDER_SET = new Set(["(no content)", "no content"]);
 const assistantNormalizedTextCache = new Map<string, string>();
 const assistantReadabilityScoreCache = new Map<
   string,
@@ -45,6 +64,73 @@ const assistantReadabilityScoreCache = new Map<
 
 function asString(value: unknown) {
   return typeof value === "string" ? value : value ? String(value) : "";
+}
+
+function normalizeCollaborationMode(value: unknown): "plan" | "code" | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "default") {
+    return "code";
+  }
+  return normalized === "plan" || normalized === "code"
+    ? normalized
+    : null;
+}
+
+function parseCollaborationModeValue(value: unknown): "plan" | "code" | null {
+  const direct = normalizeCollaborationMode(value);
+  if (direct) {
+    return direct;
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  const record = value as Record<string, unknown>;
+  return (
+    normalizeCollaborationMode(record.mode) ??
+    normalizeCollaborationMode(record.id) ??
+    normalizeCollaborationMode(record.name) ??
+    null
+  );
+}
+
+function extractModeFallbackMode(text: string): "plan" | "code" | null {
+  const trimmed = text.trimStart();
+  if (!MODE_FALLBACK_PREFIX_REGEX.test(trimmed)) {
+    return null;
+  }
+  return /^execution policy \(plan mode\):/i.test(trimmed) ? "plan" : "code";
+}
+
+function extractCollaborationModeFromUserMessageItem(
+  item: Record<string, unknown>,
+  fallbackMode: "plan" | "code" | null,
+): "plan" | "code" | null {
+  const metadata =
+    item.metadata && typeof item.metadata === "object" && !Array.isArray(item.metadata)
+      ? (item.metadata as Record<string, unknown>)
+      : null;
+  const candidates: unknown[] = [
+    item.collaborationMode,
+    item.collaboration_mode,
+    item.selectedUiMode,
+    item.selected_ui_mode,
+    item.effectiveUiMode,
+    item.effective_ui_mode,
+    item.mode,
+    metadata?.collaborationMode,
+    metadata?.collaboration_mode,
+    metadata?.mode,
+  ];
+  for (const candidate of candidates) {
+    const mode = parseCollaborationModeValue(candidate);
+    if (mode) {
+      return mode;
+    }
+  }
+  return fallbackMode;
 }
 
 function asNumber(value: unknown) {
@@ -56,6 +142,101 @@ function asNumber(value: unknown) {
     return Number.isFinite(parsed) ? parsed : null;
   }
   return null;
+}
+
+function formatPlanSteps(value: unknown) {
+  if (!Array.isArray(value)) {
+    return "";
+  }
+  const lines = value
+    .map((entry) => {
+      if (!entry || typeof entry !== "object") {
+        return "";
+      }
+      const record = entry as Record<string, unknown>;
+      const step = asString(record.step ?? record.title ?? record.text ?? "").trim();
+      if (!step) {
+        return "";
+      }
+      const status = asString(record.status ?? "").trim();
+      return status ? `- [${status}] ${step}` : `- ${step}`;
+    })
+    .filter(Boolean);
+  return lines.join("\n");
+}
+
+function extractImplementPlanActionId(item: Record<string, unknown>) {
+  const direct = asString(item.actionId ?? item.action_id ?? "").trim();
+  if (direct) {
+    return direct;
+  }
+  const action =
+    item.action && typeof item.action === "object" && !Array.isArray(item.action)
+      ? (item.action as Record<string, unknown>)
+      : null;
+  const fromAction = asString(action?.id ?? action?.actionId ?? action?.action_id ?? "").trim();
+  if (fromAction) {
+    return fromAction;
+  }
+  const actions = Array.isArray(item.actions) ? item.actions : [];
+  for (const entry of actions) {
+    if (!entry || typeof entry !== "object") {
+      continue;
+    }
+    const record = entry as Record<string, unknown>;
+    const id = asString(record.id ?? record.actionId ?? record.action_id ?? "").trim();
+    if (id) {
+      return id;
+    }
+  }
+  return "";
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  return value as Record<string, unknown>;
+}
+
+function normalizeCommandValue(value: unknown) {
+  if (typeof value === "string") {
+    return value.trim();
+  }
+  if (!Array.isArray(value)) {
+    return "";
+  }
+  const parts = value
+    .filter((entry): entry is string => typeof entry === "string")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+  return parts.join(" ").trim();
+}
+
+function getFirstStringField(source: Record<string, unknown> | null, keys: string[]) {
+  if (!source) {
+    return "";
+  }
+  for (const key of keys) {
+    const value = source[key];
+    if (typeof value === "string" && value.trim()) {
+      return value.trim();
+    }
+  }
+  return "";
+}
+
+function getFirstCommandField(source: Record<string, unknown> | null, keys: string[]) {
+  if (!source) {
+    return "";
+  }
+  for (const key of keys) {
+    const normalized = normalizeCommandValue(source[key]);
+    if (normalized) {
+      return normalized;
+    }
+  }
+  return "";
 }
 
 function joinReasoningFragments(parts: string[]) {
@@ -107,6 +288,62 @@ function truncateText(text: string, maxLength = MAX_ITEM_TEXT) {
   }
   const sliceLength = Math.max(0, maxLength - 3);
   return `${text.slice(0, sliceLength)}...`;
+}
+
+function normalizeToolHint(value: string) {
+  return value.toLowerCase().replace(/[^a-z0-9_]/g, "");
+}
+
+function hasStructuredEditDetail(detail: string) {
+  const normalized = detail.toLowerCase();
+  return (
+    normalized.includes("\"old_string\"") ||
+    normalized.includes("\"oldstring\"") ||
+    normalized.includes("\"new_string\"") ||
+    normalized.includes("\"newstring\"") ||
+    normalized.includes("\"file_path\"") ||
+    normalized.includes("\"filepath\"") ||
+    normalized.includes("\"replace_all\"")
+  );
+}
+
+function hasStructuredJsonDetail(detail: string) {
+  const trimmed = detail.trim();
+  if (!trimmed) {
+    return false;
+  }
+  const startsLikeJsonObject = trimmed.startsWith("{") && trimmed.endsWith("}");
+  const startsLikeJsonArray = trimmed.startsWith("[") && trimmed.endsWith("]");
+  if (!startsLikeJsonObject && !startsLikeJsonArray) {
+    return false;
+  }
+  try {
+    const parsed = JSON.parse(trimmed);
+    return typeof parsed === "object" && parsed !== null;
+  } catch {
+    return false;
+  }
+}
+
+function shouldPreserveToolDetail(item: Extract<ConversationItem, { kind: "tool" }>) {
+  if (NO_TRUNCATE_TOOL_TYPES.has(item.toolType)) {
+    return true;
+  }
+  if (hasStructuredJsonDetail(item.detail)) {
+    return true;
+  }
+  const toolTypeHint = normalizeToolHint(item.toolType);
+  if (EDIT_TOOL_TYPE_HINTS.has(toolTypeHint)) {
+    return true;
+  }
+  const titleHint = normalizeToolHint(item.title.replace(/^Tool:\s*/i, ""));
+  if (EDIT_TOOL_TYPE_HINTS.has(titleHint)) {
+    return true;
+  }
+  if (item.detail.length > 2000 && hasStructuredEditDetail(item.detail)) {
+    return true;
+  }
+  return false;
 }
 
 function compactMessageText(value: string) {
@@ -744,6 +981,23 @@ function scoreAssistantMessageReadability(text: string) {
   return rememberCacheEntry(assistantReadabilityScoreCache, text, { normalized, score });
 }
 
+function normalizeAssistantPlaceholderText(value: string) {
+  return value
+    .trim()
+    .toLowerCase()
+    .replaceAll("（", "(")
+    .replaceAll("）", ")");
+}
+
+function isAssistantNoContentPlaceholder(value: string) {
+  if (!value) {
+    return false;
+  }
+  return ASSISTANT_NO_CONTENT_PLACEHOLDER_SET.has(
+    normalizeAssistantPlaceholderText(value),
+  );
+}
+
 function normalizeStringList(value: unknown) {
   if (Array.isArray(value)) {
     return value.map((entry) => asString(entry)).filter(Boolean);
@@ -772,12 +1026,15 @@ function formatCollabAgentStates(value: unknown) {
 
 export function normalizeItem(item: ConversationItem): ConversationItem {
   if (item.kind === "message") {
-    const normalizedText =
+    let normalizedText =
       item.role === "assistant"
         ? shouldNormalizeAssistantText(item.text)
           ? getNormalizedAssistantMessageText(item.text)
           : item.text
         : item.text;
+    if (item.role === "assistant" && isAssistantNoContentPlaceholder(normalizedText)) {
+      normalizedText = "";
+    }
     return { ...item, text: truncateText(normalizedText) };
   }
   if (item.kind === "explore") {
@@ -794,11 +1051,12 @@ export function normalizeItem(item: ConversationItem): ConversationItem {
     return { ...item, diff: truncateText(item.diff) };
   }
   if (item.kind === "tool") {
+    const shouldKeepDetail = shouldPreserveToolDetail(item);
     const isNoTruncateTool = NO_TRUNCATE_TOOL_TYPES.has(item.toolType);
     return {
       ...item,
       title: truncateText(item.title, 200),
-      detail: truncateText(item.detail, 2000),
+      detail: shouldKeepDetail ? item.detail : truncateText(item.detail, 2000),
       output: isNoTruncateTool
         ? item.output
         : item.output
@@ -1159,6 +1417,14 @@ export function prepareThreadItems(items: ConversationItem[]) {
   }
   const filtered: ConversationItem[] = [];
   for (const item of coalesced) {
+    if (
+      item.kind === "message" &&
+      item.role === "assistant" &&
+      item.text.trim().length === 0 &&
+      (!item.images || item.images.length === 0)
+    ) {
+      continue;
+    }
     const last = filtered[filtered.length - 1];
     if (
       item.kind === "message" &&
@@ -1247,13 +1513,22 @@ export function buildConversationItem(
   }
   if (type === "userMessage") {
     const content = Array.isArray(item.content) ? item.content : [];
-    const { text, images } = parseUserInputs(content);
+    const {
+      text,
+      images,
+      collaborationMode: fallbackCollaborationMode,
+    } = parseUserInputs(content);
+    const collaborationMode = extractCollaborationModeFromUserMessageItem(
+      item,
+      fallbackCollaborationMode,
+    );
     return {
       id,
       kind: "message",
       role: "user",
       text,
       images: images.length > 0 ? images : undefined,
+      collaborationMode,
     };
   }
   if (type === "reasoning") {
@@ -1262,17 +1537,71 @@ export function buildConversationItem(
     const content = contentFromItem || asString(item.text ?? "");
     return { id, kind: "reasoning", summary, content };
   }
+  if (type === "plan" || type === "planImplementation") {
+    const toolType = type === "plan" ? "proposed-plan" : "plan-implementation";
+    const actionId = extractImplementPlanActionId(item);
+    const planText = formatPlanSteps(item.steps ?? item.plan);
+    const fallbackOutput =
+      asString(item.content ?? item.text ?? item.summary ?? item.explanation ?? "");
+    return {
+      id,
+      kind: "tool",
+      toolType,
+      title: type === "plan" ? "Proposed Plan" : "Plan Implementation",
+      detail: actionId || "",
+      status: asString(item.status ?? ""),
+      output: planText || fallbackOutput,
+    };
+  }
   if (type === "commandExecution") {
-    const command = Array.isArray(item.command)
-      ? item.command.map((part) => asString(part)).join(" ")
-      : asString(item.command ?? "");
+    const input = asRecord(item.input);
+    const nestedArgs = asRecord(item.arguments);
+    const commandKeys = [
+      "command",
+      "cmd",
+      "script",
+      "shell_command",
+      "bash",
+      "argv",
+    ];
+    const descriptionKeys = [
+      "description",
+      "summary",
+      "label",
+      "title",
+      "task",
+    ];
+    const cwdKeys = ["cwd", "workdir", "working_directory", "workingDirectory"];
+    const command =
+      getFirstCommandField(item, commandKeys) ||
+      getFirstCommandField(input, commandKeys) ||
+      getFirstCommandField(nestedArgs, commandKeys);
+    const description =
+      getFirstStringField(item, descriptionKeys) ||
+      getFirstStringField(input, descriptionKeys) ||
+      getFirstStringField(nestedArgs, descriptionKeys);
+    const cwd =
+      getFirstStringField(item, cwdKeys) ||
+      getFirstStringField(input, cwdKeys) ||
+      getFirstStringField(nestedArgs, cwdKeys) ||
+      asString(item.cwd ?? "");
+    const detailPayload = description
+      ? JSON.stringify(
+          {
+            command: command || undefined,
+            description,
+            cwd: cwd || undefined,
+          },
+        )
+      : "";
     const durationMs = asNumber(item.durationMs ?? item.duration_ms);
+    const titleText = command || description;
     return {
       id,
       kind: "tool",
       toolType: type,
-      title: command ? `Command: ${command}` : "Command",
-      detail: asString(item.cwd ?? ""),
+      title: titleText ? `Command: ${titleText}` : "Command",
+      detail: detailPayload || cwd,
       status: asString(item.status ?? ""),
       output: asString(item.aggregatedOutput ?? ""),
       durationMs,
@@ -1435,15 +1764,29 @@ function stripInjectedProjectMemoryBlock(text: string) {
   return normalized.trim();
 }
 
+function stripModeFallbackBlock(text: string) {
+  if (!extractModeFallbackMode(text)) {
+    return text;
+  }
+  const marker = MODE_FALLBACK_MARKER_REGEX.exec(text);
+  if (!marker || marker.index < 0) {
+    return text;
+  }
+  const extracted = text.slice(marker.index + marker[0].length).trim();
+  return extracted || text;
+}
+
 function parseUserInputs(inputs: Array<Record<string, unknown>>) {
   const textParts: string[] = [];
   const images: string[] = [];
+  let collaborationMode: "plan" | "code" | null = null;
   inputs.forEach((input) => {
     const type = asString(input.type);
     if (type === "text") {
       const text = asString(input.text);
       if (text) {
-        textParts.push(stripInjectedProjectMemoryBlock(text));
+        collaborationMode = collaborationMode ?? extractModeFallbackMode(text);
+        textParts.push(stripModeFallbackBlock(stripInjectedProjectMemoryBlock(text)));
       }
       return;
     }
@@ -1461,7 +1804,11 @@ function parseUserInputs(inputs: Array<Record<string, unknown>>) {
       }
     }
   });
-  return { text: textParts.join(" ").trim(), images };
+  return {
+    text: textParts.join(" ").trim(),
+    images,
+    collaborationMode,
+  };
 }
 
 export function buildConversationItemFromThreadItem(
@@ -1474,13 +1821,22 @@ export function buildConversationItemFromThreadItem(
   }
   if (type === "userMessage") {
     const content = Array.isArray(item.content) ? item.content : [];
-    const { text, images } = parseUserInputs(content);
+    const {
+      text,
+      images,
+      collaborationMode: fallbackCollaborationMode,
+    } = parseUserInputs(content);
+    const collaborationMode = extractCollaborationModeFromUserMessageItem(
+      item,
+      fallbackCollaborationMode,
+    );
     return {
       id,
       kind: "message",
       role: "user",
       text,
       images: images.length > 0 ? images : undefined,
+      collaborationMode,
     };
   }
   if (type === "agentMessage") {

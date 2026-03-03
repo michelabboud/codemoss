@@ -9,7 +9,6 @@ interface CompletionLike {
 export interface UseSubmitHandlerOptions {
   getTextContent: () => string;
   attachments: Attachment[];
-  isLoading: boolean;
   sdkStatusLoading: boolean;
   sdkInstalled: boolean;
   currentProvider: string;
@@ -21,6 +20,7 @@ export interface UseSubmitHandlerOptions {
   externalAttachments: Attachment[] | undefined;
   setInternalAttachments: Dispatch<SetStateAction<Attachment[]>>;
   fileCompletion: CompletionLike;
+  memoryCompletion: CompletionLike;
   commandCompletion: CompletionLike;
   agentCompletion: CompletionLike;
   promptCompletion: CompletionLike;
@@ -42,7 +42,6 @@ export interface UseSubmitHandlerOptions {
 export function useSubmitHandler({
   getTextContent,
   attachments,
-  isLoading,
   sdkStatusLoading,
   sdkInstalled,
   currentProvider,
@@ -52,6 +51,7 @@ export function useSubmitHandler({
   externalAttachments,
   setInternalAttachments,
   fileCompletion,
+  memoryCompletion,
   commandCompletion,
   agentCompletion,
   promptCompletion,
@@ -89,6 +89,7 @@ export function useSubmitHandler({
 
     // Close completions
     fileCompletion.close();
+    memoryCompletion.close();
     commandCompletion.close();
     agentCompletion.close();
     promptCompletion.close();
@@ -115,7 +116,6 @@ export function useSubmitHandler({
     getTextContent,
     invalidateCache,
     attachments,
-    isLoading,
     sdkStatusLoading,
     sdkInstalled,
     currentProvider,
@@ -124,6 +124,7 @@ export function useSubmitHandler({
     externalAttachments,
     setInternalAttachments,
     fileCompletion,
+    memoryCompletion,
     commandCompletion,
     agentCompletion,
     promptCompletion,

@@ -21,7 +21,6 @@ import "./styles/messages.css";
 import "./styles/approval-toasts.css";
 import "./styles/error-toasts.css";
 import "./styles/request-user-input.css";
-import "./styles/ask-user-question-dialog.css";
 import "./styles/update-toasts.css";
 import "./styles/composer.css";
 import "./styles/review-inline.css";
@@ -55,7 +54,6 @@ import successSoundUrl from "./assets/success-notification.mp3";
 import errorSoundUrl from "./assets/error-notification.mp3";
 import { AppLayout } from "./features/app/components/AppLayout";
 import { AppModals } from "./features/app/components/AppModals";
-import { AskUserQuestionDialog } from "./features/app/components/AskUserQuestionDialog";
 import { LockScreenOverlay } from "./features/app/components/LockScreenOverlay";
 import { MainHeaderActions } from "./features/app/components/MainHeaderActions";
 import { useLayoutNodes } from "./features/layout/hooks/useLayoutNodes";
@@ -164,7 +162,11 @@ import type {
   EngineType,
   MessageSendOptions,
   OpenCodeAgentOption,
+  RequestUserInputRequest,
+  RequestUserInputResponse,
   SelectedAgentOption,
+  TurnPlan,
+  TurnPlanStepStatus,
   WorkspaceInfo,
 } from "./types";
 import { getClientStoreSync, writeClientStoreValue } from "./services/clientStorage";
@@ -192,6 +194,7 @@ const GitHubPanelData = lazy(() =>
   })),
 );
 
+// Non-security UI panel lock: decorative only, not for access control.
 const PANEL_LOCK_INITIAL_PASSWORD = "000000";
 const LOCK_LIVE_SESSION_LIMIT = 12;
 const LOCK_LIVE_PREVIEW_MAX = 180;
@@ -200,6 +203,32 @@ const GIT_HISTORY_PANEL_MIN_HEIGHT = 260;
 const GIT_HISTORY_PANEL_MIN_TOP_CLEARANCE = 120;
 const GIT_HISTORY_PANEL_DEFAULT_RATIO = 0.5;
 const APP_JANK_DEBUG_FLAG_KEY = "mossx.debug.jank";
+const LOCAL_PLAN_APPLY_REQUEST_PREFIX = "mossx-plan-apply:";
+const PLAN_APPLY_ACTION_QUESTION_ID = "plan_apply_action";
+const PLAN_APPLY_EXECUTE_PROMPT = "Implement this plan.";
+const CODE_MODE_RESUME_PROMPT =
+  "I switched to code mode. Continue from the latest context and execute directly.";
+
+function extractFirstUserInputAnswer(response: RequestUserInputResponse): string | null {
+  const entries = Object.values(response.answers ?? {});
+  for (const entry of entries) {
+    for (const answer of entry?.answers ?? []) {
+      const normalized = String(answer ?? "").trim();
+      if (!normalized) {
+        continue;
+      }
+      if (normalized.toLowerCase().startsWith("user_note:")) {
+        const note = normalized.slice("user_note:".length).trim();
+        if (note) {
+          return note;
+        }
+        continue;
+      }
+      return normalized;
+    }
+  }
+  return null;
+}
 
 type ThreadCompletionTracker = {
   isProcessing: boolean;
@@ -241,6 +270,72 @@ function normalizeLockLiveSnippet(text: string, maxLength = LOCK_LIVE_PREVIEW_MA
     return compact;
   }
   return `${compact.slice(0, Math.max(0, maxLength - 1))}...`;
+}
+
+function normalizeTimelinePlanStepStatus(raw: string): TurnPlanStepStatus {
+  const normalized = raw.trim().toLowerCase();
+  if (normalized === "completed" || normalized === "done" || normalized === "success") {
+    return "completed";
+  }
+  if (
+    normalized === "in_progress" ||
+    normalized === "in-progress" ||
+    normalized === "inprogress" ||
+    normalized === "running"
+  ) {
+    return "inProgress";
+  }
+  return "pending";
+}
+
+function extractPlanFromTimelineItems(items: ConversationItem[]): TurnPlan | null {
+  const latestPlanItem = [...items]
+    .reverse()
+    .find(
+      (item) =>
+        item.kind === "tool" &&
+        (item.toolType === "proposed-plan" || item.toolType === "plan-implementation"),
+    );
+  if (!latestPlanItem || latestPlanItem.kind !== "tool") {
+    return null;
+  }
+  const output = (latestPlanItem.output ?? "").trim();
+  const lines = output
+    .split(/\r?\n+/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const steps = lines
+    .map((line) => {
+      const withStatus = line.match(/^- \[([^\]]+)\]\s*(.+)$/);
+      if (withStatus) {
+        return {
+          step: withStatus[2].trim(),
+          status: normalizeTimelinePlanStepStatus(withStatus[1]),
+        };
+      }
+      const bullet = line.match(/^- (.+)$/);
+      if (bullet) {
+        return {
+          step: bullet[1].trim(),
+          status: "pending" as TurnPlanStepStatus,
+        };
+      }
+      return null;
+    })
+    .filter((entry): entry is { step: string; status: TurnPlanStepStatus } => Boolean(entry));
+  const detail = (latestPlanItem.detail ?? "").trim();
+  const turnId = detail.startsWith("implement-plan:")
+    ? detail.slice("implement-plan:".length).trim() || latestPlanItem.id
+    : latestPlanItem.id;
+  const explanation = steps.length > 0 ? null : output || null;
+  if (!explanation && steps.length === 0) {
+    return null;
+  }
+  return {
+    turnId,
+    explanation,
+    steps,
+  };
 }
 
 function resolveLockLivePreview(
@@ -674,6 +769,96 @@ function MainApp() {
     enabled: true,
     onDebug: addDebugEntry,
   });
+  const [collaborationUiModeByThread, setCollaborationUiModeByThread] = useState<
+    Record<string, "plan" | "code">
+  >({});
+  const [collaborationRuntimeModeByThread, setCollaborationRuntimeModeByThread] = useState<
+    Record<string, "plan" | "code">
+  >({});
+  const activeThreadIdForModeRef = useRef<string | null>(null);
+  const lastCodexModeSyncThreadRef = useRef<string | null>(null);
+  const codexComposerModeRef = useRef<"plan" | "code" | null>(null);
+  const applySelectedCollaborationMode = useCallback(
+    (modeId: string | null) => {
+      if (!modeId) {
+        codexComposerModeRef.current = null;
+        setSelectedCollaborationModeId(null);
+        return;
+      }
+      const normalized = modeId === "plan" ? "plan" : "code";
+      codexComposerModeRef.current = normalized;
+      const threadId = activeThreadIdForModeRef.current;
+      if (threadId) {
+        setCollaborationUiModeByThread((prev) => {
+          if (prev[threadId] === normalized) {
+            return prev;
+          }
+          return {
+            ...prev,
+            [threadId]: normalized,
+          };
+        });
+      }
+      setSelectedCollaborationModeId(normalized);
+    },
+    [setSelectedCollaborationModeId],
+  );
+  const setCodexCollaborationMode = useCallback(
+    (mode: "plan" | "code") => {
+      applySelectedCollaborationMode(mode);
+    },
+    [applySelectedCollaborationMode],
+  );
+  const resolveCollaborationRuntimeMode = useCallback(
+    (threadId: string): "plan" | "code" | null =>
+      collaborationRuntimeModeByThread[threadId] ?? null,
+    [collaborationRuntimeModeByThread],
+  );
+  const resolveCollaborationUiMode = useCallback(
+    (threadId: string): "plan" | "code" | null =>
+      collaborationUiModeByThread[threadId] ?? null,
+    [collaborationUiModeByThread],
+  );
+  const handleCollaborationModeResolved = useCallback(
+    (payload: {
+      workspaceId: string;
+      threadId: string;
+      selectedUiMode: "plan" | "default";
+      effectiveRuntimeMode: "plan" | "code";
+      effectiveUiMode: "plan" | "default";
+      fallbackReason: string | null;
+    }) => {
+      const threadId = payload.threadId.trim();
+      if (!threadId) {
+        return;
+      }
+      const effectiveRuntimeMode = payload.effectiveRuntimeMode === "plan"
+        ? "plan"
+        : "code";
+      const effectiveUiMode = payload.effectiveUiMode === "plan"
+        ? "plan"
+        : "code";
+      setCollaborationRuntimeModeByThread((prev) => {
+        if (prev[threadId] === effectiveRuntimeMode) {
+          return prev;
+        }
+        return {
+          ...prev,
+          [threadId]: effectiveRuntimeMode,
+        };
+      });
+      setCollaborationUiModeByThread((prev) => {
+        if (prev[threadId] === effectiveUiMode) {
+          return prev;
+        }
+        return {
+          ...prev,
+          [threadId]: effectiveUiMode,
+        };
+      });
+    },
+    [],
+  );
 
   const { skills } = useSkills({ activeWorkspace, onDebug: addDebugEntry });
   const {
@@ -944,7 +1129,7 @@ function MainApp() {
     selectedModelId: effectiveSelectedModelId,
     onSelectModel: handleSelectModel,
     selectedCollaborationModeId,
-    onSelectCollaborationMode: setSelectedCollaborationModeId,
+    onSelectCollaborationMode: applySelectedCollaborationMode,
     accessMode,
     onSelectAccessMode: handleSetAccessMode,
     reasoningOptions,
@@ -959,7 +1144,7 @@ function MainApp() {
     onSelectModel: handleSelectModel,
     collaborationModes,
     selectedCollaborationModeId,
-    onSelectCollaborationMode: setSelectedCollaborationModeId,
+    onSelectCollaborationMode: applySelectedCollaborationMode,
     accessMode,
     onSelectAccessMode: handleSetAccessMode,
     reasoningOptions,
@@ -1191,6 +1376,7 @@ function MainApp() {
     startMcp,
     startSpecRoot,
     startStatus,
+    startMode,
     startExport,
     startImport,
     startLsp,
@@ -1235,7 +1421,86 @@ function MainApp() {
     useUnifiedHistoryLoader: appSettings.chatCanvasUseUnifiedHistoryLoader,
     resolveOpenCodeAgent: resolveOpenCodeAgentForThread,
     resolveOpenCodeVariant: resolveOpenCodeVariantForThread,
+    resolveCollaborationUiMode,
+    resolveCollaborationRuntimeMode,
+    onCollaborationModeResolved: handleCollaborationModeResolved,
   });
+  const handleUserInputSubmitWithPlanApply = useCallback(
+    async (
+      request: RequestUserInputRequest,
+      response: RequestUserInputResponse,
+    ) => {
+      const requestThreadId = String(request.params.thread_id ?? "").trim();
+      const runtimeMode = requestThreadId
+        ? resolveCollaborationRuntimeMode(requestThreadId)
+        : null;
+      const uiMode = requestThreadId
+        ? (resolveCollaborationUiMode(requestThreadId) ??
+          (selectedCollaborationModeId === "plan" ? "plan" : "code"))
+        : (selectedCollaborationModeId === "plan" ? "plan" : "code");
+      const shouldForceResumeInCode =
+        activeEngine === "codex" &&
+        runtimeMode === "plan" &&
+        uiMode === "code";
+      await handleUserInputSubmit(request, response);
+      const requestId = String(request.request_id ?? "");
+      if (!requestId.startsWith(LOCAL_PLAN_APPLY_REQUEST_PREFIX)) {
+        if (!shouldForceResumeInCode) {
+          return;
+        }
+        applySelectedCollaborationMode("code");
+        await interruptTurn();
+        const firstAnswer = extractFirstUserInputAnswer(response);
+        const resumePrompt = firstAnswer
+          ? `${CODE_MODE_RESUME_PROMPT}\n\nUser confirmation: ${firstAnswer}`
+          : CODE_MODE_RESUME_PROMPT;
+        const immediateCodeModePayload: Record<string, unknown> = {
+          mode: "code",
+          settings: {
+            model: resolvedModel ?? null,
+            reasoning_effort: resolvedEffort ?? null,
+          },
+        };
+        await sendUserMessage(resumePrompt, [], {
+          collaborationMode: immediateCodeModePayload,
+        });
+        return;
+      }
+      const selectedAnswer = String(
+        response.answers?.[PLAN_APPLY_ACTION_QUESTION_ID]?.answers?.[0] ?? "",
+      )
+        .trim()
+        .toLowerCase();
+      const shouldImplementPlan = selectedAnswer.startsWith("yes");
+      if (!shouldImplementPlan) {
+        applySelectedCollaborationMode("plan");
+        return;
+      }
+      applySelectedCollaborationMode("code");
+      const immediateCodeModePayload: Record<string, unknown> = {
+        mode: "code",
+        settings: {
+          model: resolvedModel ?? null,
+          reasoning_effort: resolvedEffort ?? null,
+        },
+      };
+      await sendUserMessage(PLAN_APPLY_EXECUTE_PROMPT, [], {
+        collaborationMode: immediateCodeModePayload,
+      });
+    },
+    [
+      activeEngine,
+      applySelectedCollaborationMode,
+      handleUserInputSubmit,
+      interruptTurn,
+      resolveCollaborationRuntimeMode,
+      resolveCollaborationUiMode,
+      resolvedEffort,
+      resolvedModel,
+      selectedCollaborationModeId,
+      sendUserMessage,
+    ],
+  );
   const hydratedThreadListWorkspaceIdsRef = useRef(new Set<string>());
   const listThreadsForWorkspaceTracked = useCallback(
     async (
@@ -1735,29 +2000,49 @@ function MainApp() {
   const activeTokenUsage = activeThreadId
     ? tokenUsageByThread[activeThreadId] ?? null
     : null;
+  const timelinePlan = useMemo(
+    () => extractPlanFromTimelineItems(activeItems),
+    [activeItems],
+  );
   const activePlan = activeThreadId
-    ? planByThread[activeThreadId] ?? null
-    : null;
-  const initializedCollaborationModeThreadsRef = useRef<Set<string>>(new Set());
+    ? timelinePlan ?? planByThread[activeThreadId] ?? null
+    : timelinePlan;
   useEffect(() => {
-    if (activeEngine !== "codex" || !activeThreadId) {
+    activeThreadIdForModeRef.current = activeThreadId;
+  }, [activeThreadId]);
+
+  useEffect(() => {
+    if (activeEngine !== "codex") {
       return;
     }
-    if (activeItems.length > 0) {
-      initializedCollaborationModeThreadsRef.current.add(activeThreadId);
+    const mappedMode = activeThreadId
+      ? collaborationUiModeByThread[activeThreadId] ?? null
+      : null;
+    if (mappedMode === "plan" || mappedMode === "code") {
+      lastCodexModeSyncThreadRef.current = activeThreadId;
+      codexComposerModeRef.current = mappedMode;
+      if (selectedCollaborationModeId !== mappedMode) {
+        setSelectedCollaborationModeId(mappedMode);
+      }
       return;
     }
-    if (initializedCollaborationModeThreadsRef.current.has(activeThreadId)) {
+    const threadChanged = lastCodexModeSyncThreadRef.current !== activeThreadId;
+    if (!threadChanged) {
       return;
     }
-    initializedCollaborationModeThreadsRef.current.add(activeThreadId);
-    if (selectedCollaborationModeId !== "plan") {
-      setSelectedCollaborationModeId("plan");
+    lastCodexModeSyncThreadRef.current = activeThreadId;
+    if (!activeThreadId) {
+      codexComposerModeRef.current = null;
+      return;
+    }
+    codexComposerModeRef.current = "code";
+    if (selectedCollaborationModeId !== "code") {
+      setSelectedCollaborationModeId("code");
     }
   }, [
     activeEngine,
-    activeItems.length,
     activeThreadId,
+    collaborationUiModeByThread,
     selectedCollaborationModeId,
     setSelectedCollaborationModeId,
   ]);
@@ -1836,10 +2121,24 @@ function MainApp() {
     startMcp,
     startSpecRoot,
     startStatus,
+    startMode,
     startExport,
     startImport,
     startLsp,
     startShare,
+    setCodexCollaborationMode,
+    getCodexCollaborationMode: () => {
+      const threadMode = activeThreadId
+        ? collaborationUiModeByThread[activeThreadId] ?? null
+        : null;
+      if (threadMode === "plan" || threadMode === "code") {
+        return threadMode;
+      }
+      if (selectedCollaborationModeId === "plan" || selectedCollaborationModeId === "code") {
+        return selectedCollaborationModeId;
+      }
+      return "code";
+    },
   });
 
   const handleInsertComposerText = useComposerInsert({
@@ -3613,6 +3912,10 @@ function MainApp() {
 
   useMenuAcceleratorController({ appSettings, onDebug: addDebugEntry });
   useMenuLocalization();
+  const handleRefreshAccountRateLimits = useCallback(
+    () => refreshAccountRateLimits(activeWorkspaceId ?? undefined),
+    [activeWorkspaceId, refreshAccountRateLimits],
+  );
   const dropOverlayActive = isWorkspaceDropActive;
   const dropOverlayText = "Drop Project Here";
   const shouldShowSidebarTopbarContent = false;
@@ -3669,7 +3972,7 @@ function MainApp() {
     activeItems,
     activeRateLimits,
     usageShowRemaining: appSettings.usageShowRemaining,
-    onRefreshAccountRateLimits: () => refreshAccountRateLimits(activeWorkspaceId ?? undefined),
+    onRefreshAccountRateLimits: handleRefreshAccountRateLimits,
     showMessageAnchors: appSettings.showMessageAnchors,
     accountInfo: activeAccount,
     onSwitchAccount: handleSwitchAccount,
@@ -3684,7 +3987,7 @@ function MainApp() {
     userInputRequests,
     handleApprovalDecision,
     handleApprovalRemember,
-    handleUserInputSubmit,
+    handleUserInputSubmit: handleUserInputSubmitWithPlanApply,
     onOpenSettings: () => openSettings(),
     onOpenAgentSettings: () => openSettings("agents"),
     onOpenDictationSettings: () => openSettings("dictation"),
@@ -4065,7 +4368,7 @@ function MainApp() {
     collaborationModes,
     collaborationModesEnabled,
     selectedCollaborationModeId,
-    onSelectCollaborationMode: setSelectedCollaborationModeId,
+    onSelectCollaborationMode: applySelectedCollaborationMode,
     engines: installedEngines,
     selectedEngine: activeEngine,
     usePresentationProfile: appSettings.chatCanvasUsePresentationProfile,
@@ -4443,12 +4746,6 @@ function MainApp() {
         }}
         onContentFilterToggle={handleToggleSearchContentFilter}
         onClose={closeSearchPalette}
-      />
-      <AskUserQuestionDialog
-        requests={userInputRequests}
-        activeThreadId={activeThreadId ?? null}
-        activeWorkspaceId={activeWorkspaceId}
-        onSubmit={handleUserInputSubmit}
       />
       <AppModals
         renamePrompt={renamePrompt}

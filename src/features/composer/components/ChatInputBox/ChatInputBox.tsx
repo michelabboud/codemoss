@@ -14,6 +14,7 @@ import type {
   ChatInputBoxProps,
   CommandItem,
   FileItem,
+  ManualMemoryItem,
   PermissionMode,
 } from './types.js';
 import { ChatInputBoxHeader } from './ChatInputBoxHeader.js';
@@ -61,6 +62,29 @@ import { perfTimer } from '../../utils/debug.js';
 import { DEBOUNCE_TIMING } from '../../constants/performance.js';
 import './styles.css';
 
+function manualMemoryToDropdownItem(memory: ManualMemoryItem) {
+  const label = memory.title?.trim() || memory.summary?.trim() || memory.id;
+  const summary = memory.summary?.trim() || '';
+  const meta = [memory.kind || 'note', memory.importance || 'normal'].join(' · ');
+  const description = summary ? `${summary}\n${meta}` : meta;
+  return {
+    id: `memory:${memory.id}`,
+    label,
+    description,
+    type: 'info' as const,
+    data: {
+      id: memory.id,
+      title: memory.title,
+      summary: memory.summary,
+      detail: memory.detail,
+      kind: memory.kind,
+      importance: memory.importance,
+      updatedAt: memory.updatedAt,
+      tags: memory.tags,
+    },
+  };
+}
+
 /**
  * ChatInputBox - Chat input component
  * Uses contenteditable div with auto height adjustment, IME handling, @ file references, / slash commands
@@ -84,6 +108,11 @@ export const ChatInputBox = memo(forwardRef<ChatInputBoxHandle, ChatInputBoxProp
       usageUsedTokens,
       usageMaxTokens,
       showUsage = true,
+      accountRateLimits,
+      usageShowRemaining = false,
+      onRefreshAccountRateLimits,
+      selectedCollaborationModeId,
+      onSelectCollaborationMode,
       attachments: externalAttachments,
       placeholder = '', // Will be passed from parent via t('chat.inputPlaceholder')
       disabled = false,
@@ -108,6 +137,7 @@ export const ChatInputBox = memo(forwardRef<ChatInputBoxHandle, ChatInputBoxProp
       sendShortcut = 'enter',
       selectedAgent,
       selectedContextChips,
+      selectedManualMemoryIds = [],
       onRemoveContextChip,
       onAgentSelect,
       onOpenAgentSettings,
@@ -127,6 +157,8 @@ export const ChatInputBox = memo(forwardRef<ChatInputBoxHandle, ChatInputBoxProp
       onRemoveFromQueue,
       fileCompletionProvider,
       commandCompletionProvider,
+      manualMemoryCompletionProvider,
+      onSelectManualMemory,
     }: ChatInputBoxProps,
     ref: React.ForwardedRef<ChatInputBoxHandle>
   ) => {
@@ -215,6 +247,26 @@ export const ChatInputBox = memo(forwardRef<ChatInputBoxHandle, ChatInputBoxProp
         setTimeout(() => {
           renderFileTags();
         }, 0);
+      },
+    });
+
+    // Manual memory completion hook (@@ trigger)
+    const memoryCompletion = useCompletionDropdown<ManualMemoryItem>({
+      trigger: '@@',
+      provider:
+        manualMemoryCompletionProvider ??
+        (async () => []),
+      toDropdownItem: manualMemoryToDropdownItem,
+      onSelect: (memory, query) => {
+        if (!editableRef.current || !query) return;
+
+        const text = getTextContent();
+        const newText = memoryCompletion.replaceText(text, '', query);
+        editableRef.current.innerText = newText;
+        setCursorOffset(editableRef.current, query.start);
+
+        handleInput();
+        onSelectManualMemory?.(memory);
       },
     });
 
@@ -339,6 +391,7 @@ export const ChatInputBox = memo(forwardRef<ChatInputBoxHandle, ChatInputBoxProp
     // Sync closeAllCompletionsRef after all completion hooks are defined
     closeAllCompletionsRef.current = () => {
       fileCompletion.close();
+      memoryCompletion.close();
       commandCompletion.close();
       agentCompletion.close();
       promptCompletion.close();
@@ -395,6 +448,7 @@ export const ChatInputBox = memo(forwardRef<ChatInputBoxHandle, ChatInputBoxProp
       justRenderedTagRef,
       getTextContent,
       fileCompletion,
+      memoryCompletion,
       commandCompletion,
       agentCompletion,
       promptCompletion,
@@ -473,7 +527,12 @@ export const ChatInputBox = memo(forwardRef<ChatInputBoxHandle, ChatInputBoxProp
         // Only if no other completion menu is open
         // Note: Access isOpen directly from the completion objects at call time
         // to avoid unnecessary re-renders when isOpen changes
-        const isOtherCompletionOpen = fileCompletion.isOpen || commandCompletion.isOpen || agentCompletion.isOpen || promptCompletion.isOpen;
+        const isOtherCompletionOpen =
+          fileCompletion.isOpen ||
+          memoryCompletion.isOpen ||
+          commandCompletion.isOpen ||
+          agentCompletion.isOpen ||
+          promptCompletion.isOpen;
         if (!isOtherCompletionOpen) {
           inlineCompletion.updateQuery(text);
         } else {
@@ -486,7 +545,7 @@ export const ChatInputBox = memo(forwardRef<ChatInputBoxHandle, ChatInputBoxProp
 
         timer.end();
       },
-      // Note: fileCompletion/commandCompletion/agentCompletion/promptCompletion objects are stable references
+      // Note: completion controller objects are stable references
       // We access .isOpen at call time, so we don't need .isOpen in deps
       [
         getTextContent,
@@ -495,6 +554,7 @@ export const ChatInputBox = memo(forwardRef<ChatInputBoxHandle, ChatInputBoxProp
         debouncedOnInput,
         invalidateCache,
         fileCompletion,
+        memoryCompletion,
         commandCompletion,
         agentCompletion,
         promptCompletion,
@@ -578,7 +638,6 @@ export const ChatInputBox = memo(forwardRef<ChatInputBoxHandle, ChatInputBoxProp
       getTextContent,
       invalidateCache,
       attachments,
-      isLoading,
       sdkStatusLoading,
       sdkInstalled,
       currentProvider,
@@ -589,6 +648,7 @@ export const ChatInputBox = memo(forwardRef<ChatInputBoxHandle, ChatInputBoxProp
       externalAttachments,
       setInternalAttachments,
       fileCompletion,
+      memoryCompletion,
       commandCompletion,
       agentCompletion,
       promptCompletion,
@@ -624,6 +684,7 @@ export const ChatInputBox = memo(forwardRef<ChatInputBoxHandle, ChatInputBoxProp
       sdkStatusLoading,
       sdkInstalled,
       fileCompletion,
+      memoryCompletion,
       commandCompletion,
       agentCompletion,
       promptCompletion,
@@ -655,6 +716,7 @@ export const ChatInputBox = memo(forwardRef<ChatInputBoxHandle, ChatInputBoxProp
       lastCompositionEndTimeRef,
       sendShortcut,
       fileCompletion,
+      memoryCompletion,
       commandCompletion,
       agentCompletion,
       promptCompletion,
@@ -853,6 +915,7 @@ export const ChatInputBox = memo(forwardRef<ChatInputBoxHandle, ChatInputBoxProp
                     // Don't send message when completion menu is open
                     if (
                       fileCompletion.isOpen ||
+                      memoryCompletion.isOpen ||
                       commandCompletion.isOpen ||
                       agentCompletion.isOpen ||
                       promptCompletion.isOpen
@@ -889,6 +952,11 @@ export const ChatInputBox = memo(forwardRef<ChatInputBoxHandle, ChatInputBoxProp
               providerAvailability={providerAvailability}
               providerVersions={providerVersions}
               reasoningEffort={reasoningEffort}
+              accountRateLimits={accountRateLimits}
+              usageShowRemaining={usageShowRemaining}
+              onRefreshAccountRateLimits={onRefreshAccountRateLimits}
+              selectedCollaborationModeId={selectedCollaborationModeId}
+              onSelectCollaborationMode={onSelectCollaborationMode}
               onSubmit={handleSubmit}
               onStop={onStop}
               onModeSelect={handleModeSelect}
@@ -907,9 +975,11 @@ export const ChatInputBox = memo(forwardRef<ChatInputBoxHandle, ChatInputBoxProp
               onAddModel={onOpenModelSettings}
               onClearAgent={() => onAgentSelect?.(null)}
               fileCompletion={fileCompletion}
+              memoryCompletion={memoryCompletion}
               commandCompletion={commandCompletion}
               agentCompletion={agentCompletion}
               promptCompletion={promptCompletion}
+              selectedManualMemoryIds={selectedManualMemoryIds}
               tooltip={tooltip}
               promptEnhancer={{
                 isOpen: showEnhancerDialog,

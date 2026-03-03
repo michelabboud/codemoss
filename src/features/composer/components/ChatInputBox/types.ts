@@ -135,6 +135,20 @@ export interface CommandItem {
 }
 
 /**
+ * Manual memory completion item (for @@ trigger)
+ */
+export interface ManualMemoryItem {
+  id: string;
+  title: string;
+  summary: string;
+  detail: string;
+  kind: string;
+  importance: string;
+  updatedAt: number;
+  tags: string[];
+}
+
+/**
  * Dropdown menu position
  */
 export interface DropdownPosition {
@@ -152,7 +166,7 @@ export interface DropdownPosition {
  * Trigger query information
  */
 export interface TriggerQuery {
-  /** Trigger symbol ('@' or '/' or '#' or '!') */
+  /** Trigger symbol ('@' or '@@' or '/' or '#' or '!') */
   trigger: string;
   /** Search keyword */
   query: string;
@@ -396,6 +410,16 @@ export interface UsageInfo {
   total?: number;
 }
 
+export interface RateLimitWindowInfo {
+  usedPercent?: number | null;
+  resetsAt?: number | null;
+}
+
+export interface AccountRateLimitsInfo {
+  primary?: RateLimitWindowInfo | null;
+  secondary?: RateLimitWindowInfo | null;
+}
+
 // ============================================================
 // Component Ref Handle Types
 // ============================================================
@@ -449,6 +473,16 @@ export interface ChatInputBoxProps {
   usageMaxTokens?: number;
   /** Whether to show usage */
   showUsage?: boolean;
+  /** Account rate limits snapshot for codex usage panel */
+  accountRateLimits?: AccountRateLimitsInfo | null;
+  /** Show remaining limits instead of used */
+  usageShowRemaining?: boolean;
+  /** Refresh account rate limits callback */
+  onRefreshAccountRateLimits?: () => Promise<void> | void;
+  /** Current collaboration mode id ('code' | 'plan') */
+  selectedCollaborationModeId?: string | null;
+  /** Toggle collaboration mode callback */
+  onSelectCollaborationMode?: (id: string | null) => void;
   /** Whether always thinking is enabled */
   alwaysThinkingEnabled?: boolean;
   /** Attachment list */
@@ -505,6 +539,8 @@ export interface ChatInputBoxProps {
   selectedAgent?: SelectedAgent | null;
   /** Selected S+/M+ chips rendered in context bar */
   selectedContextChips?: ContextSelectionChip[];
+  /** Selected manual memory IDs for @@ one-shot injection */
+  selectedManualMemoryIds?: string[];
   /** Remove selected S+/M+ chip callback */
   onRemoveContextChip?: (chip: ContextSelectionChip) => void;
   /** Select agent callback */
@@ -550,6 +586,13 @@ export interface ChatInputBoxProps {
   fileCompletionProvider?: (query: string, signal: AbortSignal) => Promise<FileItem[]>;
   /** Optional slash command provider override (for host app local data) */
   commandCompletionProvider?: (query: string, signal: AbortSignal) => Promise<CommandItem[]>;
+  /** Optional manual memory completion provider override (for @@ memory linking) */
+  manualMemoryCompletionProvider?: (
+    query: string,
+    signal: AbortSignal,
+  ) => Promise<ManualMemoryItem[]>;
+  /** Triggered when a manual memory is selected from @@ completion */
+  onSelectManualMemory?: (memory: ManualMemoryItem) => void;
 }
 
 /**
@@ -576,6 +619,16 @@ export interface ButtonAreaProps {
   providerVersions?: Partial<Record<ProviderId, string | null>>;
   /** Current reasoning effort (Codex only) */
   reasoningEffort?: ReasoningEffort;
+  /** Account rate limits snapshot for codex usage panel */
+  accountRateLimits?: AccountRateLimitsInfo | null;
+  /** Show remaining limits instead of used */
+  usageShowRemaining?: boolean;
+  /** Refresh account rate limits callback */
+  onRefreshAccountRateLimits?: () => Promise<void> | void;
+  /** Current collaboration mode id ('code' | 'plan') */
+  selectedCollaborationModeId?: string | null;
+  /** Toggle collaboration mode callback */
+  onSelectCollaborationMode?: (id: string | null) => void;
 
   // Event callbacks
   onSubmit?: () => void;
@@ -627,6 +680,8 @@ export interface DropdownProps {
   selectedIndex?: number;
   /** Close callback */
   onClose?: () => void;
+  /** Optional extra class names */
+  className?: string;
   /** Children */
   children: React.ReactNode;
 }

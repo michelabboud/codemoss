@@ -29,7 +29,9 @@ import type {
 import type { QueuedMessage as ComposerQueuedMessage } from '../../../../types';
 import type { CustomCommandOption } from '../../../../types';
 import type { EngineType } from '../../../../types';
+import type { RateLimitSnapshot } from '../../../../types';
 import { formatEngineVersionLabel } from '../../../engine/utils/engineLabels';
+import { projectMemoryFacade } from '../../../project-memory/services/projectMemoryFacade';
 import {
   getClaudeProviders,
   getClaudeAlwaysThinkingEnabled,
@@ -52,6 +54,17 @@ type ClaudeProviderLike = {
     [key: string]: unknown;
   };
   [key: string]: unknown;
+};
+
+type ManualMemorySelection = {
+  id: string;
+  title: string;
+  summary: string;
+  detail: string;
+  kind: string;
+  importance: string;
+  updatedAt: number;
+  tags: string[];
 };
 
 function readStoredStreamingEnabled(): boolean {
@@ -115,6 +128,11 @@ export interface ChatInputBoxAdapterProps {
 
   // Context usage
   contextUsage?: { used: number; total: number } | null;
+  accountRateLimits?: RateLimitSnapshot | null;
+  usageShowRemaining?: boolean;
+  onRefreshAccountRateLimits?: () => Promise<void> | void;
+  selectedCollaborationModeId?: string | null;
+  onSelectCollaborationMode?: (id: string | null) => void;
 
   // Queue
   queuedMessages?: ComposerQueuedMessage[];
@@ -130,6 +148,8 @@ export interface ChatInputBoxAdapterProps {
   files?: string[];
   directories?: string[];
   commands?: CustomCommandOption[];
+  workspaceId?: string | null;
+  onManualMemorySelect?: (memory: ManualMemorySelection) => void;
 
   // Header/context bar
   placeholder?: string;
@@ -139,6 +159,7 @@ export interface ChatInputBoxAdapterProps {
   onClearContext?: () => void;
   selectedAgent?: SelectedAgent | null;
   selectedContextChips?: ContextSelectionChip[];
+  selectedManualMemoryIds?: string[];
   onRemoveContextChip?: (chip: ContextSelectionChip) => void;
   onAgentSelect?: (agent: SelectedAgent | null) => void;
   onOpenAgentSettings?: () => void;
@@ -312,11 +333,18 @@ export const ChatInputBoxAdapter = forwardRef<ChatInputBoxHandle, ChatInputBoxAd
       onAddAttachment,
       onRemoveAttachment,
       contextUsage,
+      accountRateLimits,
+      usageShowRemaining,
+      onRefreshAccountRateLimits,
+      selectedCollaborationModeId,
+      onSelectCollaborationMode,
       queuedMessages,
       onDeleteQueued,
       files,
       directories,
       commands,
+      workspaceId,
+      onManualMemorySelect,
       placeholder,
       sendShortcut = 'enter',
       activeFile,
@@ -324,6 +352,7 @@ export const ChatInputBoxAdapter = forwardRef<ChatInputBoxHandle, ChatInputBoxAd
       onClearContext,
       selectedAgent,
       selectedContextChips,
+      selectedManualMemoryIds,
       onRemoveContextChip,
       onAgentSelect,
       onOpenAgentSettings,
@@ -351,15 +380,6 @@ export const ChatInputBoxAdapter = forwardRef<ChatInputBoxHandle, ChatInputBoxAd
       hasContent: () => chatInputRef.current?.hasContent() ?? false,
       getFileTags: () => chatInputRef.current?.getFileTags() ?? [],
     }));
-
-    // Sync external text changes to ChatInputBox
-    const lastTextRef = useRef(text);
-    useEffect(() => {
-      if (text !== lastTextRef.current) {
-        lastTextRef.current = text;
-        chatInputRef.current?.setValue(text);
-      }
-    }, [text]);
 
     useEffect(() => {
       if (alwaysThinkingEnabled !== undefined) {
@@ -398,7 +418,6 @@ export const ChatInputBoxAdapter = forwardRef<ChatInputBoxHandle, ChatInputBoxAd
 
     // Handle input from ChatInputBox -> Composer text state
     const handleInput = useCallback((content: string) => {
-      lastTextRef.current = content;
       onTextChange(content, null);
     }, [onTextChange]);
 
@@ -579,6 +598,40 @@ export const ChatInputBoxAdapter = forwardRef<ChatInputBoxHandle, ChatInputBoxAd
       [directories, files],
     );
 
+    const manualMemoryCompletionProvider = useCallback(
+      async (query: string, signal: AbortSignal): Promise<ManualMemorySelection[]> => {
+        if (!workspaceId) {
+          return [];
+        }
+        if (signal.aborted) {
+          throw new DOMException('Aborted', 'AbortError');
+        }
+        const response = await projectMemoryFacade.list({
+          workspaceId,
+          query: query.trim() || null,
+          importance: null,
+          kind: null,
+          tag: null,
+          page: 0,
+          pageSize: 50,
+        });
+        if (signal.aborted) {
+          throw new DOMException('Aborted', 'AbortError');
+        }
+        return response.items.map((item) => ({
+          id: item.id,
+          title: item.title?.trim() || item.summary?.trim() || item.id,
+          summary: item.summary?.trim() || '',
+          detail: item.detail?.trim() || item.cleanText?.trim() || item.summary?.trim() || '',
+          kind: item.kind || 'note',
+          importance: item.importance || 'normal',
+          updatedAt: item.updatedAt || item.createdAt || Date.now(),
+          tags: Array.isArray(item.tags) ? item.tags.filter(Boolean) : [],
+        }));
+      },
+      [workspaceId],
+    );
+
     const builtinSlashCommands = useMemo<CommandItem[]>(() => [
       { id: 'clear', label: '/clear', description: t('chat.commands.clear'), category: 'system' },
       { id: 'new', label: '/new', description: t('chat.commands.new'), category: 'system' },
@@ -735,6 +788,7 @@ export const ChatInputBoxAdapter = forwardRef<ChatInputBoxHandle, ChatInputBoxAd
         onStreamingEnabledChange={handleStreamingToggle}
         selectedAgent={selectedAgent}
         selectedContextChips={selectedContextChips}
+        selectedManualMemoryIds={selectedManualMemoryIds}
         onRemoveContextChip={onRemoveContextChip}
         onAgentSelect={onAgentSelect}
         onClearAgent={onAgentSelect ? () => onAgentSelect?.(null) : undefined}
@@ -749,11 +803,18 @@ export const ChatInputBoxAdapter = forwardRef<ChatInputBoxHandle, ChatInputBoxAd
         usageUsedTokens={contextUsage?.used}
         usageMaxTokens={contextUsage?.total}
         showUsage={true}
+        accountRateLimits={accountRateLimits}
+        usageShowRemaining={usageShowRemaining}
+        onRefreshAccountRateLimits={onRefreshAccountRateLimits}
+        selectedCollaborationModeId={selectedCollaborationModeId}
+        onSelectCollaborationMode={onSelectCollaborationMode}
         messageQueue={messageQueue}
         onRemoveFromQueue={onDeleteQueued}
         sdkInstalled={true}
         fileCompletionProvider={fileCompletionProvider}
         commandCompletionProvider={commandCompletionProvider}
+        manualMemoryCompletionProvider={manualMemoryCompletionProvider}
+        onSelectManualMemory={onManualMemorySelect}
       />
     );
   }

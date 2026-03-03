@@ -75,6 +75,40 @@ describe("threadItems", () => {
     }
   });
 
+  it("normalizes assistant no-content placeholders to empty text", () => {
+    const item: ConversationItem = {
+      id: "msg-assistant-empty-placeholder",
+      kind: "message",
+      role: "assistant",
+      text: "(no content)",
+    };
+    const normalized = normalizeItem(item);
+    expect(normalized.kind).toBe("message");
+    if (normalized.kind === "message") {
+      expect(normalized.text).toBe("");
+    }
+  });
+
+  it("filters out assistant placeholder messages after normalization", () => {
+    const items: ConversationItem[] = [
+      {
+        id: "msg-assistant-empty-placeholder",
+        kind: "message",
+        role: "assistant",
+        text: "(no content)",
+      },
+      {
+        id: "reasoning-1",
+        kind: "reasoning",
+        summary: "思考中",
+        content: "先确认需求。",
+      },
+    ];
+    const prepared = prepareThreadItems(items);
+    expect(prepared).toHaveLength(1);
+    expect(prepared[0].kind).toBe("reasoning");
+  });
+
   it("preserves tool output for fileChange and commandExecution", () => {
     const output = "x".repeat(21000);
     const item: ConversationItem = {
@@ -89,6 +123,76 @@ describe("threadItems", () => {
     expect(normalized.kind).toBe("tool");
     if (normalized.kind === "tool") {
       expect(normalized.output).toBe(output);
+    }
+  });
+
+  it("preserves long structured edit detail JSON", () => {
+    const oldString = Array.from({ length: 180 }, (_, index) => `old-${index}`).join("\n");
+    const newString = Array.from({ length: 180 }, (_, index) => `new-${index}`).join("\n");
+    const detail = JSON.stringify({
+      replace_all: false,
+      file_path: "/Users/zhukunpeng/Desktop/codemoss/.github/workflows/release.yml",
+      old_string: oldString,
+      new_string: newString,
+    });
+    const item: ConversationItem = {
+      id: "tool-edit-long-detail",
+      kind: "tool",
+      toolType: "Edit",
+      title: "Tool: Edit",
+      detail,
+      status: "completed",
+    };
+
+    const normalized = normalizeItem(item);
+    expect(normalized.kind).toBe("tool");
+    if (normalized.kind === "tool") {
+      expect(normalized.detail).toBe(detail);
+      expect(normalized.detail.length).toBeGreaterThan(2000);
+    }
+  });
+
+  it("preserves long structured read detail JSON", () => {
+    const detail = JSON.stringify({
+      file_path: "/Users/zhukunpeng/Desktop/codemoss/README.md",
+      content: "x".repeat(5000),
+      offset: 0,
+      limit: 200,
+    });
+    const item: ConversationItem = {
+      id: "tool-read-long-detail",
+      kind: "tool",
+      toolType: "Read",
+      title: "Tool: Read",
+      detail,
+      status: "completed",
+    };
+
+    const normalized = normalizeItem(item);
+    expect(normalized.kind).toBe("tool");
+    if (normalized.kind === "tool") {
+      expect(normalized.detail).toBe(detail);
+      expect(normalized.detail.length).toBeGreaterThan(2000);
+    }
+  });
+
+  it("still truncates long plain-text tool detail", () => {
+    const detail = "plain-text-".repeat(500);
+    const item: ConversationItem = {
+      id: "tool-plain-long-detail",
+      kind: "tool",
+      toolType: "customTool",
+      title: "Tool: customTool",
+      detail,
+      status: "completed",
+    };
+
+    const normalized = normalizeItem(item);
+    expect(normalized.kind).toBe("tool");
+    if (normalized.kind === "tool") {
+      expect(normalized.detail).not.toBe(detail);
+      expect(normalized.detail.endsWith("...")).toBe(true);
+      expect(normalized.detail.length).toBeLessThan(detail.length);
     }
   });
 
@@ -269,6 +373,60 @@ describe("threadItems", () => {
     );
     expect(reasoning).toBeDefined();
     expect(message).toBeDefined();
+  });
+
+  it("maps plan and planImplementation items into timeline tool entries", () => {
+    const proposed = buildConversationItem({
+      id: "plan-1",
+      type: "plan",
+      actionId: "implement-plan:turn-1",
+      steps: [
+        { step: "Inspect codebase", status: "in_progress" },
+        { step: "Draft patch", status: "pending" },
+      ],
+    });
+    expect(proposed).toEqual({
+      id: "plan-1",
+      kind: "tool",
+      toolType: "proposed-plan",
+      title: "Proposed Plan",
+      detail: "implement-plan:turn-1",
+      status: "",
+      output: "- [in_progress] Inspect codebase\n- [pending] Draft patch",
+    });
+
+    const implementation = buildConversationItem({
+      id: "plan-impl-1",
+      type: "planImplementation",
+      text: "Apply patch and verify",
+    });
+    expect(implementation).toEqual({
+      id: "plan-impl-1",
+      kind: "tool",
+      toolType: "plan-implementation",
+      title: "Plan Implementation",
+      detail: "",
+      status: "",
+      output: "Apply patch and verify",
+    });
+  });
+
+  it("extracts implement-plan action id from nested action payload", () => {
+    const proposed = buildConversationItem({
+      id: "plan-2",
+      type: "plan",
+      action: { id: "implement-plan:turn-2" },
+      steps: [{ step: "Run tests", status: "pending" }],
+    });
+    expect(proposed).toEqual({
+      id: "plan-2",
+      kind: "tool",
+      toolType: "proposed-plan",
+      title: "Proposed Plan",
+      detail: "implement-plan:turn-2",
+      status: "",
+      output: "- [pending] Run tests",
+    });
   });
 
   it("preserves distinct read paths that share the same basename", () => {
@@ -625,6 +783,44 @@ go lang`,
     }
   });
 
+  it("builds commandExecution items with structured detail payload", () => {
+    const item = buildConversationItem({
+      type: "commandExecution",
+      id: "cmd-structured-1",
+      command: ["git", "status", "--short"],
+      description: "Show working tree status",
+      cwd: "/repo",
+      status: "completed",
+      aggregatedOutput: "ok",
+    });
+    expect(item).not.toBeNull();
+    if (item && item.kind === "tool") {
+      expect(item.title).toBe("Command: git status --short");
+      const parsed = JSON.parse(item.detail) as Record<string, string>;
+      expect(parsed.command).toBe("git status --short");
+      expect(parsed.description).toBe("Show working tree status");
+      expect(parsed.cwd).toBe("/repo");
+    }
+  });
+
+  it("falls back to description when commandExecution command is missing", () => {
+    const item = buildConversationItem({
+      type: "commandExecution",
+      id: "cmd-structured-2",
+      description: "Commit staged changes",
+      cwd: "/repo",
+      status: "completed",
+      aggregatedOutput: "done",
+    });
+    expect(item).not.toBeNull();
+    if (item && item.kind === "tool") {
+      expect(item.title).toBe("Command: Commit staged changes");
+      const parsed = JSON.parse(item.detail) as Record<string, string>;
+      expect(parsed.description).toBe("Commit staged changes");
+      expect(parsed.cwd).toBe("/repo");
+    }
+  });
+
   it("falls back to reasoning text when content is missing in streaming items", () => {
     const item = buildConversationItem({
       type: "reasoning",
@@ -754,6 +950,41 @@ go lang`,
       expect(item.role).toBe("user");
       expect(item.text).toBe("Please $Review");
       expect(item.images).toEqual(["https://example.com/image.png"]);
+    }
+  });
+
+  it("strips plan fallback directive prefix from user message content", () => {
+    const item = buildConversationItemFromThreadItem({
+      type: "userMessage",
+      id: "msg-plan-fallback-1",
+      content: [
+        {
+          type: "text",
+          text:
+            "Execution policy (plan mode): planning-only. If blocker appears, call requestUserInput.\n\nUser request: 只改前端，不改后端。",
+        },
+      ],
+    });
+    expect(item).not.toBeNull();
+    if (item && item.kind === "message") {
+      expect(item.role).toBe("user");
+      expect(item.text).toBe("只改前端，不改后端。");
+      expect(item.collaborationMode).toBe("plan");
+    }
+  });
+
+  it("extracts collaboration mode metadata from user message payload", () => {
+    const item = buildConversationItemFromThreadItem({
+      type: "userMessage",
+      id: "msg-mode-meta-1",
+      mode: "default",
+      content: [{ type: "text", text: "保持默认模式" }],
+    });
+    expect(item).not.toBeNull();
+    if (item && item.kind === "message") {
+      expect(item.role).toBe("user");
+      expect(item.text).toBe("保持默认模式");
+      expect(item.collaborationMode).toBe("code");
     }
   });
 
