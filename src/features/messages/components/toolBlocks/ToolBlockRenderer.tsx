@@ -75,8 +75,6 @@ export const ToolBlockRenderer = memo(function ToolBlockRenderer({
     return (
       <EditToolBlock
         item={item}
-        isExpanded={isExpanded}
-        onToggle={onToggle}
       />
     );
   }

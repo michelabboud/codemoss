@@ -224,6 +224,10 @@ const en = {
     uiFont: "UI Font",
     codeFont: "Code Font",
     codeFontSize: "Code Font Size",
+    userMsgColorLabel: "User Message Color",
+    userMsgColorCustom: "Custom",
+    userMsgColorReset: "Reset",
+    userMsgColorHint: "Customize your message bubble background color. Leave empty to follow theme defaults.",
 
     // Codex section
     codexPath: "Codex Path",
@@ -1000,6 +1004,7 @@ const en = {
     noModels: "No models",
     dragToResize: "Drag to resize",
     expandInput: "Expand input",
+    collapseInput: "Collapse input",
     collapsedProcessing: "Running, tap to expand",
     addImage: "Add image",
     // Review
@@ -3111,7 +3116,7 @@ const en = {
     webSearch: "Web search",
     subtask: "Subtask",
     todoList: "Todo list",
-    userInputRequest: "User Input Request",
+    userInputRequest: "Ask User Question",
     diffCompare: "Diff",
     result: "Result",
     webRequest: "Web request",
@@ -3121,6 +3126,10 @@ const en = {
     batchSearch: "Batch search",
     batchSearchMatch: "Batch search/match",
     batchEditFile: "Batch edit files",
+    bashGroupBatchRun: "Batch Run Commands",
+    bashGroupCompleted: "completed",
+    bashGroupAllCompleted: "All completed",
+    bashGroupFailed: "failed",
     planQuickView: "Plan",
     openFullPlanPanel: "Open full Plan panel",
     closePlanPanel: "Close Plan panel",
