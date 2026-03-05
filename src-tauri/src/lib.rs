@@ -357,6 +357,7 @@ pub fn run() {
             dictation::dictation_cancel,
             // Local usage
             local_usage::local_usage_snapshot,
+            local_usage::local_usage_statistics,
             // Client storage
             client_storage::client_store_read,
             client_storage::client_store_write,
@@ -369,6 +370,7 @@ pub fn run() {
             input_history::input_history_clear,
             // Vendors
             vendors::vendor_get_claude_providers,
+            vendors::vendor_get_current_claude_config,
             vendors::vendor_add_claude_provider,
             vendors::vendor_update_claude_provider,
             vendors::vendor_delete_claude_provider,

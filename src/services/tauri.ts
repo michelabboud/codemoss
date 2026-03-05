@@ -9,6 +9,7 @@ import type {
   DictationModelStatus,
   DictationSessionState,
   LocalUsageSnapshot,
+  LocalUsageStatistics,
   WorkspaceInfo,
   WorkspaceSettings,
   EngineStatus,
@@ -679,6 +680,20 @@ export async function localUsageSnapshot(
     payload.workspacePath = workspacePath;
   }
   return invoke("local_usage_snapshot", payload);
+}
+
+export async function localUsageStatistics(input: {
+  scope: "current" | "all";
+  provider?: string | null;
+  dateRange: "7d" | "30d" | "all";
+  workspacePath?: string | null;
+}): Promise<LocalUsageStatistics> {
+  return invoke<LocalUsageStatistics>("local_usage_statistics", {
+    scope: input.scope,
+    provider: input.provider ?? "claude",
+    dateRange: input.dateRange,
+    workspacePath: input.workspacePath ?? null,
+  });
 }
 
 export async function getModelList(workspaceId: string) {
@@ -2012,6 +2027,10 @@ export async function deleteClaudeProvider(id: string): Promise<void> {
 
 export async function switchClaudeProvider(id: string): Promise<void> {
   return invoke("vendor_switch_claude_provider", { id });
+}
+
+export async function getCurrentClaudeConfig(): Promise<any> {
+  return invoke<any>("vendor_get_current_claude_config");
 }
 
 export async function getClaudeAlwaysThinkingEnabled(): Promise<boolean> {

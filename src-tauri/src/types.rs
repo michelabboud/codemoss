@@ -353,6 +353,91 @@ pub(crate) struct LocalUsageSnapshot {
     pub(crate) top_models: Vec<LocalUsageModel>,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct LocalUsageUsageData {
+    pub(crate) input_tokens: i64,
+    pub(crate) output_tokens: i64,
+    pub(crate) cache_write_tokens: i64,
+    pub(crate) cache_read_tokens: i64,
+    pub(crate) total_tokens: i64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct LocalUsageSessionSummary {
+    pub(crate) session_id: String,
+    pub(crate) timestamp: i64,
+    pub(crate) model: String,
+    pub(crate) usage: LocalUsageUsageData,
+    pub(crate) cost: f64,
+    #[serde(default)]
+    pub(crate) summary: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct LocalUsageDailyUsage {
+    pub(crate) date: String,
+    pub(crate) sessions: i64,
+    pub(crate) usage: LocalUsageUsageData,
+    pub(crate) cost: f64,
+    #[serde(default)]
+    pub(crate) models_used: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct LocalUsageModelUsage {
+    pub(crate) model: String,
+    pub(crate) total_cost: f64,
+    pub(crate) total_tokens: i64,
+    pub(crate) input_tokens: i64,
+    pub(crate) output_tokens: i64,
+    pub(crate) cache_creation_tokens: i64,
+    pub(crate) cache_read_tokens: i64,
+    pub(crate) session_count: i64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct LocalUsageWeekData {
+    pub(crate) sessions: i64,
+    pub(crate) cost: f64,
+    pub(crate) tokens: i64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct LocalUsageTrends {
+    pub(crate) sessions: f64,
+    pub(crate) cost: f64,
+    pub(crate) tokens: f64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct LocalUsageWeeklyComparison {
+    pub(crate) current_week: LocalUsageWeekData,
+    pub(crate) last_week: LocalUsageWeekData,
+    pub(crate) trends: LocalUsageTrends,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct LocalUsageStatistics {
+    pub(crate) project_path: String,
+    pub(crate) project_name: String,
+    pub(crate) total_sessions: i64,
+    pub(crate) total_usage: LocalUsageUsageData,
+    pub(crate) estimated_cost: f64,
+    pub(crate) sessions: Vec<LocalUsageSessionSummary>,
+    pub(crate) daily_usage: Vec<LocalUsageDailyUsage>,
+    pub(crate) weekly_comparison: LocalUsageWeeklyComparison,
+    pub(crate) by_model: Vec<LocalUsageModelUsage>,
+    pub(crate) last_updated: i64,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub(crate) struct BranchInfo {
     pub(crate) name: String,

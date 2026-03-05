@@ -3,7 +3,25 @@ import { useTranslation } from "react-i18next";
 import { Switch } from "@/components/ui/switch";
 import { Separator } from "@/components/ui/separator";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import {
+  Card,
+  CardAction,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { ask, open } from "@tauri-apps/plugin-dialog";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import ChevronDown from "lucide-react/dist/esm/icons/chevron-down";
@@ -659,7 +677,6 @@ export function SettingsView({
     [activeWorkspace, projects],
   );
   const shouldShowWorkspaceSelector =
-    activeSection === "usage" ||
     activeSection === "prompts" ||
     activeSection === "skills";
   const mcpSectionDisabled = TEMPORARILY_DISABLED_SIDEBAR_SECTIONS.has("mcp");
@@ -1042,8 +1059,10 @@ export function SettingsView({
   }, [handleSaveUserMsgColor]);
 
   const handleNotificationSoundOptionChange = useCallback(
-    (event: React.ChangeEvent<HTMLSelectElement>) => {
-      const nextSound = event.target.value;
+    (nextSound: string | null) => {
+      if (!nextSound) {
+        return;
+      }
       if (nextSound === selectedNotificationSound) {
         return;
       }
@@ -2015,7 +2034,7 @@ export function SettingsView({
                           onClick={() =>
                             void onUpdateAppSettings({
                               ...appSettings,
-                              sendShortcut: "enter",
+                              composerSendShortcut: "enter",
                             })
                           }
                         >
@@ -2033,7 +2052,7 @@ export function SettingsView({
                           onClick={() =>
                             void onUpdateAppSettings({
                               ...appSettings,
-                              sendShortcut: "cmdEnter",
+                              composerSendShortcut: "cmdEnter",
                             })
                           }
                         >
@@ -2047,70 +2066,85 @@ export function SettingsView({
                         </button>
                       </div>
                     </div>
-                    <div className="settings-basic-group-card settings-basic-group-card--list settings-basic-group-card--plain">
-                      <div className="settings-toggle-row">
-                        <div>
-                          <div className="settings-toggle-title">{t("settings.behaviorStreaming")}</div>
-                          <div className="settings-toggle-subtitle">
+                    <Card className="settings-basic-group-card settings-basic-shadcn-card settings-basic-streaming-card">
+                      <CardHeader className="settings-card-switch-header">
+                        <div className="settings-card-switch-meta">
+                          <CardTitle className="settings-toggle-title">
+                            {t("settings.behaviorStreaming")}
+                          </CardTitle>
+                          <CardDescription className="settings-toggle-subtitle">
                             {t("settings.behaviorStreamingDesc")}
-                          </div>
+                          </CardDescription>
                         </div>
-                        <Switch
-                          checked={appSettings.streamingEnabled ?? true}
-                          onCheckedChange={(checked) =>
-                            void onUpdateAppSettings({
-                              ...appSettings,
-                              streamingEnabled: checked,
-                            })
-                          }
-                        />
-                      </div>
-                    </div>
-                    <div className="settings-basic-group-card settings-basic-group-card--list settings-basic-group-card--plain">
-                      <div className="settings-subsection-title">{t("settings.soundsSubtitle")}</div>
-                      <div className="settings-subsection-subtitle">
-                        {t("settings.soundsSubDescription")}
-                      </div>
-                      <div className="settings-toggle-row">
-                        <div>
-                          <div className="settings-toggle-title">{t("settings.notificationSounds")}</div>
-                          <div className="settings-toggle-subtitle">
-                            {t("settings.notificationSoundsDesc")}
+                        <CardAction className="settings-card-switch-action">
+                          <Switch
+                            checked={appSettings.streamingEnabled ?? true}
+                            onCheckedChange={(checked) =>
+                              void onUpdateAppSettings({
+                                ...appSettings,
+                                streamingEnabled: checked,
+                              })
+                            }
+                          />
+                        </CardAction>
+                      </CardHeader>
+                    </Card>
+                    <Card
+                      className={`settings-basic-group-card settings-basic-shadcn-card settings-basic-sounds-card${
+                        appSettings.notificationSoundsEnabled ? " is-enabled" : ""
+                      }`}
+                    >
+                      <CardHeader className="settings-basic-sounds-card-header">
+                        <CardTitle className="settings-subsection-title">
+                          {t("settings.soundsSubtitle")}
+                        </CardTitle>
+                        <CardDescription className="settings-subsection-subtitle">
+                          {t("settings.soundsSubDescription")}
+                        </CardDescription>
+                      </CardHeader>
+                      <CardContent className="settings-basic-sounds-card-content">
+                        <div className="settings-sound-toggle-row">
+                          <div>
+                            <div className="settings-toggle-title">{t("settings.notificationSounds")}</div>
+                            <div className="settings-toggle-subtitle">
+                              {t("settings.notificationSoundsDesc")}
+                            </div>
                           </div>
+                          <Switch
+                            checked={appSettings.notificationSoundsEnabled}
+                            onCheckedChange={(checked) =>
+                              void onUpdateAppSettings({
+                                ...appSettings,
+                                notificationSoundsEnabled: checked,
+                              })
+                            }
+                          />
                         </div>
-                        <Switch
-                          checked={appSettings.notificationSoundsEnabled}
-                          onCheckedChange={(checked) =>
-                            void onUpdateAppSettings({
-                              ...appSettings,
-                              notificationSoundsEnabled: checked,
-                            })
-                          }
-                        />
-                      </div>
-                      <div className="settings-help settings-sound-hint">
-                        <Info size={14} aria-hidden />
-                        <span>
-                          {appSettings.notificationSoundsEnabled
-                            ? t("settings.notificationSoundsEnabled")
-                            : t("settings.notificationSoundsDisabled")}
-                          {" · "}
-                          {t("settings.notificationSoundsHint")}
-                        </span>
-                      </div>
-                      {appSettings.notificationSoundsEnabled ? (
-                        <div className="settings-sound-config">
-                          <div className="settings-field settings-basic-item">
-                            <label className="settings-field-label" htmlFor="notification-sound-select">
-                              {t("settings.soundSelectLabel")}
-                            </label>
-                            <div className="settings-sound-select-row">
-                              <div className="settings-select-wrap settings-sound-select-wrap">
+                        <div className="settings-help settings-sound-hint settings-sound-hint-shadcn">
+                          <Badge variant="outline" className="settings-sound-status-badge">
+                            <Info size={12} aria-hidden />
+                            <span>
+                              {appSettings.notificationSoundsEnabled
+                                ? t("settings.notificationSoundsEnabled")
+                                : t("settings.notificationSoundsDisabled")}
+                            </span>
+                          </Badge>
+                          <span className="settings-sound-hint-copy">
+                            {t("settings.notificationSoundsHint")}
+                          </span>
+                        </div>
+                        {appSettings.notificationSoundsEnabled ? (
+                          <div className="settings-sound-config settings-sound-config-shadcn">
+                            <div className="settings-sound-control-item">
+                              <Label className="settings-field-label" htmlFor="notification-sound-select-native">
+                                {t("settings.soundSelectLabel")}
+                              </Label>
+                              <div className="settings-sound-select-row settings-sound-select-row-shadcn">
                                 <select
-                                  id="notification-sound-select"
-                                  className="settings-select"
+                                  id="notification-sound-select-native"
+                                  className="settings-sound-native-select-sr"
                                   value={selectedNotificationSound}
-                                  onChange={handleNotificationSoundOptionChange}
+                                  onChange={(event) => handleNotificationSoundOptionChange(event.target.value)}
                                 >
                                   {soundOptions.map((option) => (
                                     <option key={option.value} value={option.value}>
@@ -2118,62 +2152,87 @@ export function SettingsView({
                                     </option>
                                   ))}
                                 </select>
+                                <Select
+                                  value={selectedNotificationSound}
+                                  onValueChange={handleNotificationSoundOptionChange}
+                                >
+                                  <SelectTrigger
+                                    id="notification-sound-select"
+                                    className="settings-sound-select-trigger"
+                                    aria-label={t("settings.soundSelectLabel")}
+                                  >
+                                    <SelectValue />
+                                  </SelectTrigger>
+                                  <SelectContent>
+                                    {soundOptions.map((option) => (
+                                      <SelectItem key={option.value} value={option.value}>
+                                        {option.label}
+                                      </SelectItem>
+                                    ))}
+                                  </SelectContent>
+                                </Select>
+                                <Button
+                                  type="button"
+                                  variant="outline"
+                                  size="sm"
+                                  className="settings-sound-test-btn"
+                                  onClick={() =>
+                                    onTestNotificationSound(
+                                      selectedNotificationSound,
+                                      notificationSoundPathDraft,
+                                    )
+                                  }
+                                >
+                                  {t("settings.test")}
+                                </Button>
                               </div>
-                              <button
-                                type="button"
-                                className="ghost settings-sound-test-btn"
-                                onClick={() =>
-                                  onTestNotificationSound(
-                                    selectedNotificationSound,
-                                    notificationSoundPathDraft,
-                                  )
-                                }
-                              >
-                                {t("settings.test")}
-                              </button>
                             </div>
+                            {selectedNotificationSound === "custom" ? (
+                              <div className="settings-sound-control-item settings-sound-control-item-custom">
+                                <Label className="settings-field-label" htmlFor="notification-sound-custom-path">
+                                  {t("settings.soundCustomFileLabel")}
+                                </Label>
+                                <div className="settings-sound-custom-path-row settings-sound-custom-path-row-shadcn">
+                                  <Input
+                                    id="notification-sound-custom-path"
+                                    type="text"
+                                    className="settings-sound-custom-input"
+                                    value={notificationSoundPathDraft}
+                                    placeholder={t("settings.soundCustomPlaceholder")}
+                                    onChange={(event) => setNotificationSoundPathDraft(event.target.value)}
+                                  />
+                                  <Button
+                                    type="button"
+                                    variant="outline"
+                                    size="sm"
+                                    className="settings-button-compact"
+                                    onClick={() => {
+                                      void handleBrowseNotificationSoundPath();
+                                    }}
+                                    aria-label={t("settings.browse")}
+                                  >
+                                    <FolderOpen size={14} aria-hidden />
+                                    {t("settings.browse")}
+                                  </Button>
+                                  <Button
+                                    type="button"
+                                    variant="outline"
+                                    size="sm"
+                                    className="settings-button-compact"
+                                    onClick={handleSaveNotificationSoundPath}
+                                  >
+                                    {t("common.save")}
+                                  </Button>
+                                </div>
+                                <div className="settings-help settings-sound-custom-hint">
+                                  {t("settings.soundCustomHint")}
+                                </div>
+                              </div>
+                            ) : null}
                           </div>
-                          {selectedNotificationSound === "custom" ? (
-                            <div className="settings-field settings-basic-item">
-                              <label className="settings-field-label" htmlFor="notification-sound-custom-path">
-                                {t("settings.soundCustomFileLabel")}
-                              </label>
-                              <div className="settings-sound-custom-path-row">
-                                <input
-                                  id="notification-sound-custom-path"
-                                  type="text"
-                                  className="settings-input"
-                                  value={notificationSoundPathDraft}
-                                  placeholder={t("settings.soundCustomPlaceholder")}
-                                  onChange={(event) => setNotificationSoundPathDraft(event.target.value)}
-                                />
-                                <button
-                                  type="button"
-                                  className="ghost settings-button-compact"
-                                  onClick={() => {
-                                    void handleBrowseNotificationSoundPath();
-                                  }}
-                                  aria-label={t("settings.browse")}
-                                >
-                                  <FolderOpen size={14} aria-hidden />
-                                  {t("settings.browse")}
-                                </button>
-                                <button
-                                  type="button"
-                                  className="ghost settings-button-compact"
-                                  onClick={handleSaveNotificationSoundPath}
-                                >
-                                  {t("settings.save")}
-                                </button>
-                              </div>
-                              <div className="settings-help">
-                                {t("settings.soundCustomHint")}
-                              </div>
-                            </div>
-                          ) : null}
-                        </div>
-                      ) : null}
-                    </div>
+                        ) : null}
+                      </CardContent>
+                    </Card>
                   </div>
                 )}
                 {basicSubTab === "appearance" && (
@@ -2474,7 +2533,13 @@ export function SettingsView({
               <VendorSettingsPanel />
             )}
             {activeSection === "usage" && (
-              <UsageSection activeWorkspace={selectedSettingsWorkspace} />
+              <UsageSection
+                activeWorkspace={selectedSettingsWorkspace}
+                activeEngine={activeEngine}
+                workspaces={projects}
+                selectedWorkspaceId={selectedSettingsWorkspace?.id ?? ""}
+                onWorkspaceChange={(workspaceId) => setSettingsWorkspaceId(workspaceId || null)}
+              />
             )}
             {activeSection === "mcp" && (
               <McpSection

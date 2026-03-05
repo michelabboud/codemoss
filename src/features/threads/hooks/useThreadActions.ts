@@ -34,6 +34,7 @@ import { createCodexHistoryLoader } from "../loaders/codexHistoryLoader";
 import { createOpenCodeHistoryLoader } from "../loaders/opencodeHistoryLoader";
 import {
   asString,
+  asNumber,
   normalizeRootPath,
 } from "../utils/threadNormalize";
 import { saveThreadActivity } from "../utils/threadStorage";
@@ -73,6 +74,7 @@ const THREAD_LIST_MAX_EMPTY_PAGES = 5;
 const THREAD_LIST_MAX_EMPTY_PAGES_WITH_ACTIVITY = 20;
 const THREAD_LIST_MAX_TOTAL_PAGES = 40;
 const THREAD_LIST_MAX_EMPTY_PAGES_LOAD_OLDER = 10;
+const EXCLUDED_THREAD_SOURCES = new Set(["vscode"]);
 
 function normalizeComparableWorkspacePath(path: string): string {
   return normalizeRootPath(path).trim();
@@ -109,6 +111,39 @@ function matchesWorkspacePath(threadCwd: string, workspacePath: string): boolean
     }
   }
   return false;
+}
+
+function toBooleanFlag(value: unknown): boolean {
+  if (typeof value === "boolean") {
+    return value;
+  }
+  if (typeof value === "number") {
+    return value !== 0;
+  }
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    return normalized === "1" || normalized === "true" || normalized === "yes";
+  }
+  return false;
+}
+
+function isArchivedThread(thread: Record<string, unknown>): boolean {
+  const archivedFlag = toBooleanFlag(thread.archived ?? thread.isArchived);
+  if (archivedFlag) {
+    return true;
+  }
+  return asNumber(thread.archivedAt ?? thread.archived_at) > 0;
+}
+
+function shouldIncludeThreadEntry(thread: Record<string, unknown>): boolean {
+  if (isArchivedThread(thread)) {
+    return false;
+  }
+  const source = asString(thread.source).trim().toLowerCase();
+  if (source && EXCLUDED_THREAD_SOURCES.has(source)) {
+    return false;
+  }
+  return true;
 }
 
 export function useThreadActions({
@@ -714,7 +749,9 @@ export function useThreadActions({
             (result?.nextCursor ?? result?.next_cursor ?? null) as string | null;
           matchingThreads.push(
             ...data.filter(
-              (thread) => matchesWorkspacePath(String(thread?.cwd ?? ""), workspacePath),
+              (thread) =>
+                matchesWorkspacePath(String(thread?.cwd ?? ""), workspacePath) &&
+                shouldIncludeThreadEntry(thread),
             ),
           );
           cursor = nextCursor;
@@ -997,7 +1034,9 @@ export function useThreadActions({
             (result?.nextCursor ?? result?.next_cursor ?? null) as string | null;
           matchingThreads.push(
             ...data.filter(
-              (thread) => matchesWorkspacePath(String(thread?.cwd ?? ""), workspacePath),
+              (thread) =>
+                matchesWorkspacePath(String(thread?.cwd ?? ""), workspacePath) &&
+                shouldIncludeThreadEntry(thread),
             ),
           );
           cursor = next;

@@ -179,6 +179,7 @@ import { useAccountSwitching } from "./features/app/hooks/useAccountSwitching";
 import { useMenuLocalization } from "./features/app/hooks/useMenuLocalization";
 import { sendSystemNotification, setNotificationActionHandler } from "./services/systemNotification";
 import { ReleaseNotesModal } from "./features/update/components/ReleaseNotesModal";
+import { requestVendorModelManager } from "./features/vendors/modelManagerRequest";
 
 const AboutView = lazy(() =>
   import("./features/about/components/AboutView").then((module) => ({
@@ -590,6 +591,15 @@ function MainApp() {
     openSettings,
     closeSettings,
   } = useSettingsModalState();
+
+  const handleOpenModelSettings = useCallback(
+    (providerId?: string) => {
+      const target = providerId === "codex" ? "codex" : "claude";
+      requestVendorModelManager({ target, addMode: true });
+      openSettings("providers");
+    },
+    [openSettings],
+  );
 
   const [isSearchPaletteOpen, setIsSearchPaletteOpen] = useState(false);
   const [searchScope, setSearchScope] = useState<SearchScope>("active-workspace");
@@ -1032,6 +1042,12 @@ function MainApp() {
   const handleSelectModel = useCallback(
     (id: string | null) => {
       if (id === null) return;
+      if (import.meta.env.DEV) {
+        console.info("[model/select]", {
+          activeEngine,
+          selectedModelId: id,
+        });
+      }
       if (activeEngine === "codex") {
         setSelectedModelId(id);
         return;
@@ -1055,6 +1071,9 @@ function MainApp() {
 
   useEffect(() => {
     if (activeEngine === "codex") {
+      return;
+    }
+    if (activeEngine === "claude") {
       return;
     }
     if (engineModelsAsOptions.length === 0) {
@@ -1083,6 +1102,12 @@ function MainApp() {
   const effectiveSelectedModelId = useMemo(() => {
     if (activeEngine === "codex") {
       return selectedModelId;
+    }
+    if (activeEngine === "claude") {
+      return (
+        engineSelectedModelIdByType[activeEngine] ??
+        "claude-sonnet-4-6"
+      );
     }
     const engineSelection = engineSelectedModelIdByType[activeEngine] ?? null;
     if (engineModelsAsOptions.length === 0) {
@@ -1232,8 +1257,25 @@ function MainApp() {
     onError: alertError,
   });
 
-  const resolvedModel = effectiveSelectedModel?.model ?? null;
+  const resolvedModel = effectiveSelectedModel?.model ?? effectiveSelectedModelId ?? null;
   const resolvedEffort = effectiveReasoningSupported ? selectedEffort : null;
+
+  useEffect(() => {
+    if (!import.meta.env.DEV) {
+      return;
+    }
+    console.info("[model/resolve/app]", {
+      activeEngine,
+      effectiveSelectedModelId,
+      effectiveSelectedModelModel: effectiveSelectedModel?.model ?? null,
+      resolvedModel,
+    });
+  }, [
+    activeEngine,
+    effectiveSelectedModelId,
+    effectiveSelectedModel?.model,
+    resolvedModel,
+  ]);
   const resolveOpenCodeAgentForThread = useCallback(
     (threadId: string | null) => {
       if (!activeWorkspaceId) {
@@ -2726,14 +2768,10 @@ function MainApp() {
   const isWindowsDesktop = useMemo(() => isWindowsPlatform(), []);
 
   useEffect(() => {
-    try {
-      const title = activeWorkspace
-        ? `MossX - ${activeWorkspace.name}`
-        : "MossX";
-      void getCurrentWindow().setTitle(title);
-    } catch {
-      // Non-Tauri environment, ignore.
-    }
+    const title = activeWorkspace
+      ? `MossX - ${activeWorkspace.name}`
+      : "MossX";
+    void getCurrentWindow().setTitle(title).catch(() => {});
   }, [activeWorkspace]);
 
   useWorkspaceRestore({
@@ -4042,6 +4080,7 @@ function MainApp() {
     handleUserInputSubmit: handleUserInputSubmitWithPlanApply,
     onOpenSettings: () => openSettings(),
     onOpenAgentSettings: () => openSettings("agents"),
+    onOpenModelSettings: handleOpenModelSettings,
     onOpenDictationSettings: () => openSettings("dictation"),
     onOpenDebug: handleDebugClick,
     showDebugButton,

@@ -81,7 +81,7 @@ const playNotificationAudioUrl = (
 ) => {
   try {
     const audio = new Audio(url);
-    audio.volume = 0.12;
+    audio.volume = 1;
     audio.preload = "auto";
     audio.addEventListener("error", () => {
       onDebug?.({

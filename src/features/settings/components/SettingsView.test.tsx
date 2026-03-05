@@ -380,7 +380,7 @@ describe("SettingsView Display", () => {
 
     const row = screen
       .getByText("Notification sounds")
-      .closest(".settings-toggle-row") as HTMLElement | null;
+      .closest(".settings-sound-toggle-row") as HTMLElement | null;
     if (!row) {
       throw new Error("Expected notification sounds row");
     }
@@ -402,7 +402,13 @@ describe("SettingsView Display", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Behavior" }));
 
-    fireEvent.change(screen.getByLabelText("Notification sound"), {
+    const nativeSelect = screen
+      .getAllByLabelText("Notification sound")
+      .find((node) => node.tagName.toLowerCase() === "select");
+    if (!nativeSelect) {
+      throw new Error("Expected native notification sound select");
+    }
+    fireEvent.change(nativeSelect, {
       target: { value: "bell" },
     });
 
