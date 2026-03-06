@@ -1024,6 +1024,7 @@ export function useLayoutNodes(options: LayoutNodesOptions): LayoutNodesResult {
     gitDiffPanelNode = (
       <FileTreePanel
         workspaceId={options.activeWorkspace.id}
+        workspaceName={options.activeWorkspace.name}
         workspacePath={options.activeWorkspace.path}
         files={options.files}
         directories={options.directories}
